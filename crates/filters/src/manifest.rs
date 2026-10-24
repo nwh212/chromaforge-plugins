@@ -104,6 +104,12 @@ pub struct Manifest {
     /// parameter name. Read by [`Manifest::parse`]; labels that aren't 1-64 printable characters are dropped.
     #[serde(skip)]
     pub labels: Vec<(String, String)>,
+    /// Menu groups of choice parameters that declare them (`"groups": ["", "Kodak", "Kodak", …]`, one
+    /// per option, `""` = not in a group), by parameter name. Read by [`Manifest::parse`]; a list
+    /// whose length differs from the options', or with a name that isn't 1-64 printable characters,
+    /// is dropped (the menu stays flat).
+    #[serde(skip)]
+    pub groups: Vec<(String, Vec<String>)>,
 }
 
 /// The pipeline stage a filter asks for (see [`Manifest::stage`]).
@@ -192,6 +198,19 @@ impl Manifest {
                     ok.then(|| (k.clone(), l.to_string()))
                 })
                 .collect();
+            man.groups = man
+                .params
+                .iter()
+                .filter_map(|(k, spec)| {
+                    let ParamSpec::Choice { options, .. } = spec else { return None };
+                    let names: Vec<String> =
+                        ps.get(k)?.get("groups")?.as_array()?.iter().map(|g| g.as_str().map(|s| s.trim().to_string())).collect::<Option<_>>()?;
+                    let printable = |g: &String| {
+                        g.is_empty() || (g.chars().count() <= 64 && g.chars().all(|c| !c.is_control() && !hidden_format(c)) && g.chars().any(visible))
+                    };
+                    (names.len() == options.len() && names.iter().all(printable) && names.iter().any(|g| !g.is_empty())).then(|| (k.clone(), names))
+                })
+                .collect();
         }
         Ok(man)
     }
@@ -241,6 +260,11 @@ impl Manifest {
             Some((_, l)) => l.clone(),
             None => humanise(key),
         }
+    }
+
+    /// The menu group of each option of choice parameter `key` (`""`: none), when the manifest gives them.
+    pub fn param_groups(&self, key: &str) -> Option<&[String]> {
+        self.groups.iter().find(|(k, _)| k == key).map(|(_, g)| g.as_slice())
     }
 
     /// The parameter notation the command registry and the generated dialogs use
@@ -535,6 +559,19 @@ mod tests {
         assert_eq!(m.param_label("x"), "X", "an unprintable label falls back to the key");
         assert_eq!(humanise("dynamicRange"), "Dynamic range");
         assert_eq!(humanise("ISO_boost"), "ISO boost");
+        let grouped = Manifest::parse(
+            br#"{"id":"a.b","name":"N","kind":"filter",
+                "params":{"stock":{"type":"choice","options":["Generic","Portra","Gold","Superia"],"groups":["","Kodak","Kodak","Fujifilm"]},
+                          "short":{"type":"choice","options":["a","b"],"groups":["G"]},
+                          "flat":{"type":"choice","options":["a","b"],"groups":["",""]},
+                          "bad":{"type":"choice","options":["a","b"],"groups":["G","\u202Eevil"]},
+                          "num":{"type":"number","min":0,"max":1,"default":0,"groups":["G"]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(grouped.param_groups("stock"), Some(&["".to_string(), "Kodak".into(), "Kodak".into(), "Fujifilm".into()][..]));
+        for k in ["short", "flat", "bad", "num", "absent"] {
+            assert_eq!(grouped.param_groups(k), None, "{k}: no usable groups, a flat menu");
+        }
         let odd = Manifest::parse(br#"{"id":"a.b","name":"N","kind":"filter","stage":7}"#).unwrap();
         assert_eq!(odd.stage, None, "an unknown stage is ignored, not an error");
     }

@@ -403,13 +403,34 @@ fn param(ui: &mut egui::Ui, uid: u32, name: &str, key: &str, s: &Value, cur: Opt
             inset(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(&label);
-                    egui::ComboBox::from_id_salt(("choice", key)).selected_text(now).show_ui(ui, |ui| {
-                        for o in opts.iter().filter_map(Value::as_str) {
+                    let r = egui::ComboBox::from_id_salt(("choice", key)).selected_text(now).show_ui(ui, |ui| {
+                        let mut pick = |ui: &mut egui::Ui, o: &str| {
                             if ui.selectable_label(o == now, o).clicked() && o != now {
                                 out.push(set(json!(o)));
                             }
+                        };
+                        let opts: Vec<&str> = opts.iter().filter_map(Value::as_str).collect();
+                        // the manifest's `groups`: one collapsible section per group, in order of first
+                        // appearance; the one holding the current choice starts open
+                        match choice_groups(s, &opts) {
+                            None => opts.iter().for_each(|o| pick(ui, o)),
+                            Some(groups) => {
+                                let mut shown: Vec<&str> = Vec::new();
+                                for (o, g) in opts.iter().zip(&groups) {
+                                    if g.is_empty() {
+                                        pick(ui, o);
+                                    } else if !shown.contains(g) {
+                                        shown.push(g);
+                                        let open = opts.iter().zip(&groups).any(|(o, h)| h == g && *o == now);
+                                        egui::CollapsingHeader::new(*g).id_salt(("choice-group", key, *g)).default_open(open).show(ui, |ui| {
+                                            opts.iter().zip(&groups).filter(|(_, h)| *h == g).for_each(|(o, _)| pick(ui, o));
+                                        });
+                                    }
+                                }
+                            }
                         }
                     });
+                    register(ui.ctx(), format!("pluginFilterChoice:{uid}:{key}"), r.response.rect);
                 });
             });
         }
@@ -417,9 +438,31 @@ fn param(ui: &mut egui::Ui, uid: u32, name: &str, key: &str, s: &Value, cur: Opt
     }
 }
 
+/// The menu group of each of `opts` from a choice spec's `groups` (as `plugin.list` gives them),
+/// when there is one per option and at least one isn't empty.
+fn choice_groups<'a>(spec: &'a Value, opts: &[&str]) -> Option<Vec<&'a str>> {
+    let g: Vec<&str> = spec.get("groups")?.as_array()?.iter().map(Value::as_str).collect::<Option<_>>()?;
+    (g.len() == opts.len() && g.iter().any(|x| !x.is_empty())).then_some(g)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn choice_groups_need_one_per_option() {
+        let opts = ["Generic", "Portra", "Superia"];
+        assert_eq!(choice_groups(&json!({"groups": ["", "Kodak", "Fujifilm"]}), &opts), Some(vec!["", "Kodak", "Fujifilm"]));
+        for bad in [
+            json!({}),
+            json!({"groups": ["", "Kodak"]}),
+            json!({"groups": ["", "", ""]}),
+            json!({"groups": ["", 3, "x"]}),
+            json!({"groups": "Kodak"}),
+        ] {
+            assert_eq!(choice_groups(&bad, &opts), None, "{bad}");
+        }
+    }
 
     #[test]
     fn plugin_list_parsing_is_defensive() {

@@ -132,6 +132,9 @@ pub fn info(f: &Filter) -> Value {
         let mut v = serde_json::to_value(spec).unwrap_or(Value::Null);
         if let Some(o) = v.as_object_mut() {
             o.insert("label".into(), Value::from(m.param_label(k)));
+            if let Some(g) = m.param_groups(k) {
+                o.insert("groups".into(), Value::from(g.to_vec()));
+            }
         }
         params.insert(k.clone(), v);
     }

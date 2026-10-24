@@ -395,5 +395,6 @@ fn placeholder_manifest() -> Manifest {
         analyze_area: crate::AnalyzeArea::Frame,
         base_tone: crate::BaseTone::Camera,
         labels: Vec::new(),
+        groups: Vec::new(),
     }
 }
