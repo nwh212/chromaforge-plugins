@@ -31,6 +31,7 @@ pub mod cull;
 pub mod curve;
 pub mod depth_model;
 pub mod dust;
+pub mod film_dust;
 pub mod finish;
 pub mod genpatch;
 pub mod geometry;
