@@ -1,7 +1,7 @@
 //! Masking and Remove (spot) commands on the active photo.
 
 use lcc_develop::{BrushStroke, LocalAdjustments, Mask, MaskComponent, MaskOp, MaskShape, RedEye, Spot, SpotMode};
-use lcc_geom::Point;
+use lcc_geom::{Affine, Point};
 use serde_json::{Value, json};
 
 use super::{CommandSpec, bad, bool_or, cmd, f64_or, has_active, ok, point, str_param};
@@ -872,6 +872,55 @@ pub fn specs() -> Vec<CommandSpec> {
                     dd.spots.push(spot);
                 }
                 s.set_develop(id, dd, "Find Dust Spots")?;
+                Ok(json!({"spots": out, "added": found.len()}))
+            }
+        ),
+        cmd!(
+            "spot.findFilmDust",
+            "Find Film Dust and Hair",
+            [],
+            None,
+            "{sensitivity?: 0..100 (50), add?: bool (true)} — on a scanned negative or slide (after its conversion), find dust specks (small sharp bright spots) and hairs or scratches (thin bright lines) on smooth areas inside the crop, and add a heal spot on each speck and a heal stroke along each line (one undo step) → {spots: [{points: [[x, y], …], size}], added}",
+            has_active,
+            |s, p| {
+                let c = "spot.findFilmDust";
+                let id = s.active().ok_or_else(|| bad(c, "no active photo"))?;
+                // the uncropped photo, so positions are the spots' own coordinates; larger than
+                // for sensor dust, since film dust and hairs are only a few pixels wide
+                let job = s.render_job(id, 2400, 2400, false, false).ok_or_else(|| bad(c, "no photo"))?;
+                let img = job.run().rendered.map_err(|e| bad(c, e))?.image;
+                let mut dd = (*s.develop_of(id).unwrap_or_default()).clone();
+                // only what's inside the crop: a scan's rebate (edge print, sprocket holes) is
+                // usually cropped away, and its lettering isn't dust
+                let (w, h) = (img.width as f64, img.height as f64);
+                let geometry = dd.crop.geometry;
+                let (crop, to_crop) = (geometry.rect_px(w, h), Affine::rotate_about(geometry.angle.to_radians(), Point::new(w / 2.0, h / 2.0)));
+                let inside = |q: &(f64, f64)| crop.contains(to_crop.apply(Point::new(q.0 * w, q.1 * h)));
+                let found: Vec<_> = lcc_pipeline::film_dust::detect(&img, f64_or(p, "sensitivity", 50.0) as f32)
+                    .into_iter()
+                    .filter(|d| d.points.iter().filter(|q| inside(q)).count() * 2 > d.points.len())
+                    .collect();
+                let out: Vec<Value> =
+                    found.iter().map(|d| json!({"points": d.points.iter().map(|q| [q.0, q.1]).collect::<Vec<_>>(), "size": d.radius})).collect();
+                if !p.get("add").and_then(Value::as_bool).unwrap_or(true) || found.is_empty() {
+                    return Ok(json!({"spots": out, "added": 0}));
+                }
+                let base = Spot::default();
+                for d in &found {
+                    let mut spot = Spot {
+                        mode: SpotMode::Heal,
+                        points: d.points.iter().map(|q| Point::new(q.0, q.1)).collect(),
+                        size: d.radius.clamp(SPOT_SIZE.0, SPOT_SIZE.1),
+                        feather: base.feather,
+                        opacity: 100.0,
+                        source_offset: d.source.map(|o| Point::new(o.0, o.1)),
+                    };
+                    if spot.source_offset.is_none() {
+                        spot.source_offset = pick_source(s, id, &dd, &spot, None);
+                    }
+                    dd.spots.push(spot);
+                }
+                s.set_develop(id, dd, "Find Film Dust and Hair")?;
                 Ok(json!({"spots": out, "added": found.len()}))
             }
         ),

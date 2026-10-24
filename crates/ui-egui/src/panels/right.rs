@@ -690,6 +690,27 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         Err(e) => app.toast(ui.ctx(), e),
                     }
                 }
+                if text_button(ui, "findFilmDust", crate::i18n::tr("Film Dust"), false)
+                    .on_hover_text(crate::i18n::tr(
+                        "On a scanned negative or slide: automatically find and heal dust specks, hairs and scratches on smooth areas",
+                    ))
+                    .clicked()
+                {
+                    match app.run("spot.findFilmDust", json!({})) {
+                        Ok(r) => {
+                            let n = r["added"].as_u64().unwrap_or(0);
+                            app.toast(
+                                ui.ctx(),
+                                if n == 0 {
+                                    crate::i18n::tr("No film dust or hairs found").to_string()
+                                } else {
+                                    crate::i18n::tr_format!("Healed {n} film dust spot{}", if n == 1 { "" } else { "s" }, n = n)
+                                },
+                            );
+                        }
+                        Err(e) => app.toast(ui.ctx(), e),
+                    }
+                }
             });
         });
 
