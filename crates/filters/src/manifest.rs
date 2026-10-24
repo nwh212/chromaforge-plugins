@@ -96,6 +96,10 @@ pub struct Manifest {
     /// proposal alongside `pc_analyze`; hosts without it measure the frame). Unknown values mean the frame.
     #[serde(default, deserialize_with = "lenient_area", skip_serializing_if = "AnalyzeArea::is_frame")]
     pub analyze_area: AnalyzeArea,
+    /// How a raw developer tones a Source filter's output (`"baseTone": "camera" | "neutral"`, an ABI
+    /// v1.1 proposal; hosts without it use their base tone). Unknown values mean the camera's.
+    #[serde(default, deserialize_with = "lenient_base_tone", skip_serializing_if = "BaseTone::is_camera")]
+    pub base_tone: BaseTone,
     /// Display labels of parameters that declare one (`{"type": …, "label": "Dynamic range"}`), by
     /// parameter name. Read by [`Manifest::parse`]; labels that aren't 1-64 printable characters are dropped.
     #[serde(skip)]
@@ -122,6 +126,29 @@ pub enum AnalyzeArea {
     /// The photo as the develop geometry frames it (orientation, crop, straighten, flips, lens and
     /// perspective corrections): what the source stage sees. A new crop needs a new measurement.
     Crop,
+}
+
+/// The base tone a raw gets after a Source filter (see [`Manifest::base_tone`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BaseTone {
+    /// The raw's own: its camera's tone curve, or the host's default raw curve.
+    #[default]
+    Camera,
+    /// None: the filter's output is already a finished rendering (a negative conversion with its
+    /// own tone curve), shown as it is, like a JPEG's. Contrast, Whites and Blacks still apply.
+    Neutral,
+}
+
+impl BaseTone {
+    pub fn is_camera(&self) -> bool {
+        *self == BaseTone::Camera
+    }
+}
+
+fn lenient_base_tone<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<BaseTone, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(if v.as_str() == Some("neutral") { BaseTone::Neutral } else { BaseTone::Camera })
 }
 
 impl AnalyzeArea {

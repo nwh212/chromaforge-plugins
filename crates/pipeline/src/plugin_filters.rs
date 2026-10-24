@@ -117,6 +117,12 @@ impl Stack {
         self.entries.iter().any(|(_, r)| r.as_ref().is_ok_and(|f| f.manifest().overlap > 0))
     }
 
+    /// Whether a filter of the stack renders a finished picture (manifest `"baseTone": "neutral"`):
+    /// a raw then gets no base tone curve after it ([`crate::finish::base_tone`]).
+    pub fn neutral_base_tone(&self) -> bool {
+        self.entries.iter().any(|(_, r)| r.as_ref().is_ok_and(|f| f.manifest().base_tone == lcc_filters::BaseTone::Neutral))
+    }
+
     /// Runs the stack on `img` (interleaved RGB as `encoding` says), in order; each filter that is
     /// missing or fails leaves the image as it was and adds a warning.
     pub fn apply(&self, img: &mut [[f32; 3]], w: usize, h: usize, frame: lcc_filters::FrameInfo, encoding: &str, warnings: &mut Vec<String>) {

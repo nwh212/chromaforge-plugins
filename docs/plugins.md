@@ -277,6 +277,14 @@ inside the user's crop, say). The measurement still doesn't move with later crop
 picks up a new one. Hosts without the field measure the frame. `plugin.list` shows it as
 `analyzeArea`.
 
+**Base tone (ABI v1.1 proposal).** A raw is toned after the Source stage: by its camera's own
+curve when the file has one, else by the default raw curve. A Source filter whose output is
+already a finished picture (a negative conversion with its own tone curve) may set
+`"baseTone": "neutral"` (default `"camera"`; other values mean the camera's): the photo is then
+shown as it is, as a JPEG would be, so the filter's tones aren't toned a second time. Contrast,
+Whites and Blacks still apply. Hosts without the field use their base tone. `plugin.list` shows it as
+`baseTone`.
+
 **Pixel scale.** A Source filter that reads neighbours (manifest `overlap` > 0: an unsharp mask,
 grain, a blur) would look different at each render size, its kernel spanning more of the photo in
 a small preview than in a full-size export. Such a stack runs once on the whole frame at the

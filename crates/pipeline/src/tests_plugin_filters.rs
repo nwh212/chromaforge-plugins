@@ -11,8 +11,13 @@ use crate::{PixelWindow, Quality, RenderRequest, SourceInfo, StageCache, render,
 
 /// A filter module with manifest id `id` whose `pc_filter` sets every sample to `1 - v`.
 pub(crate) fn invert_module(id: &str) -> Vec<u8> {
+    invert_module_with(id, "")
+}
+
+/// [`invert_module`] with more manifest fields (`,"key":value…`).
+fn invert_module_with(id: &str, more: &str) -> Vec<u8> {
     let manifest = format!(
-        r#"{{"id":"{id}","name":"Invert","version":"1","kind":"filter","params":{{"amount":{{"type":"number","min":0,"max":1,"default":1}}}}}}"#
+        r#"{{"id":"{id}","name":"Invert","version":"1","kind":"filter","params":{{"amount":{{"type":"number","min":0,"max":1,"default":1}}}}{more}}}"#
     );
     let src = format!(
         r#"(module
@@ -46,8 +51,9 @@ impl FilterHost for Host {
 }
 
 fn info() -> SourceInfo {
-    let f = lcc_filters::Filter::load(&invert_module("t.invert"), lcc_filters::Limits::default()).unwrap();
-    SourceInfo { filters: Some(FilterHostRef(Arc::new(Host(vec![Arc::new(f)])))), ..Default::default() }
+    let load = |m: Vec<u8>| Arc::new(lcc_filters::Filter::load(&m, lcc_filters::Limits::default()).unwrap());
+    let filters = vec![load(invert_module("t.invert")), load(invert_module_with("t.rendered", r#","baseTone":"neutral""#))];
+    SourceInfo { filters: Some(FilterHostRef(Arc::new(Host(filters)))), ..Default::default() }
 }
 
 fn source() -> Rgb32f {
@@ -150,4 +156,26 @@ fn per_pixel_filter_preview_matches_export_scale() {
     };
     let (a, b) = (mean(&big.image), mean(&small.image));
     assert!((0..3).all(|k| (a[k] - b[k]).abs() < 2.0), "{a:?} {b:?}");
+}
+
+/// A raw is toned by its base curve after a Source filter, unless the filter says it renders a
+/// finished picture (`"baseTone": "neutral"`): then it is shown as a non-raw source would be.
+#[test]
+fn a_rendering_source_filter_turns_off_the_raw_base_tone() {
+    let src = source();
+    let req = RenderRequest::fit(96, 64);
+    // a camera's own curve, as a raw file can carry
+    let curve = crate::tone::CameraTone::new(std::array::from_fn(|i| {
+        let x = 0.004 * 1.18f32.powi(i as i32);
+        [x, 1.0 - (-2.0 * x).exp()]
+    }));
+    let raw = SourceInfo { raw: true, camera_tone: curve, ..info() };
+    // two inverts leave the pixels as they were: only the tone after them differs
+    let out = |info: &SourceInfo, plugin: &str| render(&src, info, &with(&[FilterStage::Source, FilterStage::Source], plugin), &req);
+    let (plain, toned) = (out(&info(), "t.invert"), out(&raw, "t.invert"));
+    assert!(toned.warnings.is_empty(), "{:?}", toned.warnings);
+    assert!(max_diff(&plain.image, &toned.image) > 10, "a raw gets its base tone");
+    let rendered = out(&raw, "t.rendered");
+    assert!(rendered.warnings.is_empty(), "{:?}", rendered.warnings);
+    assert!(max_diff(&out(&info(), "t.rendered").image, &rendered.image) <= 1, "no base tone after a rendering filter");
 }
