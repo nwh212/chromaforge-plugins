@@ -38,8 +38,11 @@ impl FilmDefect {
     }
 }
 
-/// Most defects reported: the strongest are kept.
+/// Most defects reported from the picture: the strongest are kept.
 const MAX_DEFECTS: usize = 150;
+/// Most defects reported from the infrared pass, which is sure of each one: a dusty frame has a
+/// few hundred (each is one heal spot, so there is a limit still).
+const MAX_DEFECTS_INFRARED: usize = 400;
 /// Most points on a hair's path.
 const MAX_PATH_POINTS: usize = 48;
 
@@ -208,7 +211,7 @@ pub fn detect_infrared(ir: &Plane, luma: &Plane, sensitivity: f32) -> Vec<FilmDe
         }
     }
     out.sort_by(|a, b| b.strength.total_cmp(&a.strength));
-    out.truncate(MAX_DEFECTS);
+    out.truncate(MAX_DEFECTS_INFRARED);
     out
 }
 

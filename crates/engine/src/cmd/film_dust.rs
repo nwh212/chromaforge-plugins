@@ -47,8 +47,12 @@ fn find_film_dust(s: &mut Session, p: &Value) -> Result<Value> {
     let infrared = if source == Source::Picture {
         None
     } else {
-        let src = s.source_now(id, SourceLevel::Preview).map_err(|e| bad(c, e))?;
-        let info = s.source_info(id);
+        // the preview-level decode and the facts of that same decode (a plane the size of another
+        // level's pixels would not fit)
+        let photo = s.catalog.photo(id).cloned().ok_or_else(|| bad(c, "no photo"))?;
+        let decoded = s.media.source_ref(&photo, SourceLevel::Preview).load_source().map_err(|e| bad(c, e))?;
+        let src = decoded.image.clone();
+        let info = decoded.info_or(crate::media::source_info(&photo));
         info.infrared.as_deref().and_then(|ir| {
             let mut uncropped = dd.clone();
             uncropped.crop.geometry = lcc_geom::CropGeometry::default();
