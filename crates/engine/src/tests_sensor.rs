@@ -521,7 +521,8 @@ fn film_dust_is_healed_from_a_scanners_infrared_pass() {
     let px = |x: u32, y: u32| {
         let speck = (x as i64 - 80).pow(2) + (y as i64 - 60).pow(2) <= 4;
         let hair = (120..260).contains(&x) && y as i64 == 150 + (x as i64 - 120) / 7;
-        vec![30000u16, 25000, 20000, if speck || hair { 3000 } else { 42000 }]
+        // dust blocks light: dark in the colour too, and in the pass
+        if speck || hair { vec![4000u16, 3000, 2000, 3000] } else { vec![30000, 25000, 20000, 42000] }
     };
     let path = dir.join("scan.tif");
     std::fs::write(&path, lcc_testkit::tiff16(w, h, 4, "VueScan 9 x64 (9.8.52)", None, px)).unwrap();
@@ -609,4 +610,51 @@ fn film_dust_is_healed_from_a_scanners_infrared_pass() {
     assert!(err.contains("infrared"), "{err}");
     assert!(s.execute("spot.filmDustMask", &json!({})).unwrap_err().to_string().contains("infrared"));
     assert!(s.execute("spot.findFilmDust", &json!({"infrared": "sometimes"})).is_err());
+}
+
+/// Remove Film Dust (`filmDust.remove`, a develop control) fills the pass's marks in before the
+/// picture is converted: the speck renders like its surroundings, off it stays dark; a photo
+/// without the pass renders the same with it on; the setting is not written while default.
+#[test]
+fn remove_film_dust_fills_the_marks_in_the_render() {
+    let dir = temp_dir("film-ir-remove");
+    let (w, h) = (320u32, 240u32);
+    let px = |x: u32, y: u32| {
+        let speck = (x as i64 - 80).pow(2) + (y as i64 - 60).pow(2) <= 9;
+        if speck { vec![4000u16, 3000, 2000, 3000] } else { vec![30000, 25000, 20000, 42000] }
+    };
+    let path = dir.join("scan.tif");
+    std::fs::write(&path, lcc_testkit::tiff16(w, h, 4, "VueScan 9 x64 (9.8.52)", None, px)).unwrap();
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let id = s.active().unwrap();
+    let at = |s: &mut Session, x: usize, y: usize| -> [u8; 4] {
+        let img = s.render_now(id, 320, 240).unwrap().image;
+        img.data[y * img.width + x]
+    };
+    let dark = at(&mut s, 80, 60);
+    let clean = at(&mut s, 100, 60);
+    assert!(dark[1] + 40 < clean[1], "the speck is dark before: {dark:?} vs {clean:?}");
+    s.execute("develop.set", &json!({"control": "filmDust.remove", "value": 1})).unwrap();
+    let filled = at(&mut s, 80, 60);
+    assert!((i32::from(filled[1]) - i32::from(clean[1])).abs() <= 6, "filled: {filled:?} vs {clean:?}");
+    assert_eq!(at(&mut s, 100, 60), clean, "the rest is untouched");
+    // the setting rides along in the settings JSON only when it is not the default
+    let d = s.develop_of(id).unwrap();
+    assert!(serde_json::to_string(&*d).unwrap().contains("film_dust"));
+    assert!(!serde_json::to_string(&lcc_develop::DevelopSettings::default()).unwrap().contains("film_dust"));
+    // sensitivity and expand are develop controls
+    s.execute("develop.set", &json!({"control": "filmDust.expand", "value": 40})).unwrap();
+    assert_eq!(s.develop_of(id).unwrap().film_dust.expand, 40.0);
+    s.execute("develop.set", &json!({"control": "filmDust.remove", "value": 0})).unwrap();
+    assert_eq!(at(&mut s, 80, 60), dark, "off again: the speck is back");
+    // no pass: nothing changes with it on
+    let plain = dir.join("plain.png");
+    let img = lcc_raster::Rgba8 { width: 80, height: 60, data: vec![[90, 100, 110, 255]; 4800] };
+    std::fs::write(&plain, lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap()).unwrap();
+    s.execute("library.import", &json!({"paths": [plain.to_string_lossy()]})).unwrap();
+    let pid = s.active().unwrap();
+    let before = s.render_now(pid, 80, 60).unwrap().image;
+    s.execute("develop.set", &json!({"control": "filmDust.remove", "value": 1})).unwrap();
+    assert_eq!(s.render_now(pid, 80, 60).unwrap().image.data, before.data);
 }

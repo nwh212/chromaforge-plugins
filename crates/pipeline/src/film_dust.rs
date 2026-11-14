@@ -17,7 +17,9 @@
 //! Sources: morphological top-hat transform (J. Serra, "Image Analysis and Mathematical
 //! Morphology", 1982); blob shape from second moments; own design otherwise.
 
-use lcc_raster::{Plane, Rgba8};
+use std::sync::{Arc, Mutex, PoisonError};
+
+use lcc_raster::{Plane, Rgb32f, Rgba8};
 
 /// A found defect: a speck (one point) or a hair or scratch (a path of points), in 0..1 of the
 /// image's width and height, with its radius (fraction of the long edge) and how much brighter
@@ -464,6 +466,145 @@ fn same_both_sides(path: &[(f64, f64)], luma: &Plane, near: f64, depth: f64, str
     typical <= (0.25 * strength).max(0.03)
 }
 
+/// The long edge `FilmDust::expand` is given at: a mark on a smaller or larger pass is grown by the same fraction.
+pub const EXPAND_EDGE: f64 = 2400.0;
+
+/// The defect map of the infrared pass `ir` for `fd` ([`infrared_map`] at `fd`'s sensitivity and
+/// expand), kept for the next render: a photo's pass and settings make the same map every time.
+pub fn cached_map(ir: &Arc<Plane>, fd: &lcc_develop::FilmDust) -> Option<Arc<Plane>> {
+    static MAPS: Mutex<Vec<(u64, Arc<Plane>)>> = Mutex::new(Vec::new());
+    let long = ir.width.max(ir.height) as f64;
+    let expand = if fd.expand.is_finite() { (fd.expand.clamp(-8.0, 40.0) * long / EXPAND_EDGE).round() as i32 } else { 0 };
+    let sensitivity = if fd.sensitivity.is_finite() { fd.sensitivity.clamp(0.0, 100.0) as f32 } else { 50.0 };
+    let key = crate::hash_of((Arc::as_ptr(ir) as usize, ir.width, ir.height, ir.data.len(), sensitivity.to_bits(), expand));
+    if let Some((_, m)) = MAPS.lock().unwrap_or_else(PoisonError::into_inner).iter().find(|(k, _)| *k == key) {
+        return Some(m.clone());
+    }
+    let map = Arc::new(infrared_map(ir, sensitivity, expand)?);
+    let mut g = MAPS.lock().unwrap_or_else(PoisonError::into_inner);
+    if g.len() >= 4 {
+        g.remove(0);
+    }
+    g.push((key, map.clone()));
+    Some(map)
+}
+
+/// The marks of the photo's infrared pass as the render `frame` of `w`×`h` sees them (0..1), for
+/// `s.film_dust`'s sensitivity and expand; `None` when the photo has no pass.
+pub fn mask_for(info: &crate::SourceInfo, s: &lcc_develop::DevelopSettings, frame: &crate::geometry::Frame, w: usize, h: usize) -> Option<Plane> {
+    let ir = info.infrared.as_ref()?;
+    let map = cached_map(ir, &s.film_dust)?;
+    Some(frame.sample_alpha(&map, w, h))
+}
+
+/// The Source-stage step: when `s.film_dust` is on and the photo has an infrared pass, the marked
+/// pixels of `img` (the source as `frame` samples it, `img.width`×`img.height`) are filled in
+/// from their surroundings ([`inpaint`]). True when the image changed.
+pub fn stage(img: &mut Rgb32f, info: &crate::SourceInfo, s: &lcc_develop::DevelopSettings, frame: &crate::geometry::Frame) -> bool {
+    if !s.film_dust.on() || info.infrared.is_none() {
+        return false;
+    }
+    let Some(mask) = mask_for(info, s, frame, img.width, img.height) else { return false };
+    inpaint(img, &mask)
+}
+
+/// A pixel whose sampled mark value reaches this is filled in (a speck a pixel wide keeps a
+/// footprint when the mask is resampled smaller).
+const MASKED: f32 = 0.3;
+/// Most rings of filling from the edge inwards: a mark wider than twice this (in render pixels) keeps its middle.
+const MAX_RINGS: usize = 96;
+
+/// Fills every pixel of `img` where `mask` ≥ [`MASKED`] from the pixels around it: ring by ring
+/// from the mark's edge inwards, each pixel the weighted mean of its already-known neighbours
+/// (the 4-neighbours counting twice the diagonals), then a few passes of smoothing over the filled
+/// pixels alone, so the fill carries the surroundings' tone and gradient without the seams a
+/// single pass leaves. Texture isn't invented: a filled speck is smooth, as a scanner's own
+/// infrared cleaning leaves it. False when nothing was marked.
+pub fn inpaint(img: &mut Rgb32f, mask: &Plane) -> bool {
+    let (w, h) = (img.width, img.height);
+    if mask.width != w || mask.height != h || img.data.len() < w * h || mask.data.len() < w * h || w == 0 || h == 0 {
+        return false;
+    }
+    // 0 = known, 1 = to fill, 2 = filled this ring
+    let mut state: Vec<u8> = mask.data.iter().take(w * h).map(|m| u8::from(*m >= MASKED)).collect();
+    let mut unknown: Vec<usize> = state.iter().enumerate().filter(|(_, s)| **s == 1).map(|(i, _)| i).collect();
+    if unknown.is_empty() {
+        return false;
+    }
+    let filled_all: Vec<usize> = unknown.clone();
+    let neighbours = |i: usize| -> [(Option<usize>, f32); 8] {
+        let (x, y) = (i % w, i / w);
+        let at = |dx: i64, dy: i64| {
+            let (nx, ny) = (x as i64 + dx, y as i64 + dy);
+            (nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64).then(|| ny as usize * w + nx as usize)
+        };
+        [(at(-1, 0), 1.0), (at(1, 0), 1.0), (at(0, -1), 1.0), (at(0, 1), 1.0), (at(-1, -1), 0.5), (at(1, -1), 0.5), (at(-1, 1), 0.5), (at(1, 1), 0.5)]
+    };
+    for _ in 0..MAX_RINGS {
+        if unknown.is_empty() {
+            break;
+        }
+        // this ring: the unknown pixels with a known neighbour, from the image as it stands
+        let mut ring: Vec<(usize, [f32; 3])> = Vec::new();
+        for &i in &unknown {
+            let (mut sum, mut wsum) = ([0.0f32; 3], 0.0f32);
+            for (n, wt) in neighbours(i) {
+                if let Some(n) = n
+                    && state.get(n).copied() == Some(0)
+                    && let Some(p) = img.data.get(n)
+                {
+                    sum = [sum[0] + p[0] * wt, sum[1] + p[1] * wt, sum[2] + p[2] * wt];
+                    wsum += wt;
+                }
+            }
+            if wsum > 0.0 {
+                ring.push((i, sum.map(|v| v / wsum)));
+            }
+        }
+        if ring.is_empty() {
+            break; // nothing known to fill from (a mask over the whole image)
+        }
+        for (i, v) in &ring {
+            if let Some(p) = img.data.get_mut(*i) {
+                *p = *v;
+            }
+            if let Some(s) = state.get_mut(*i) {
+                *s = 2;
+            }
+        }
+        for s in state.iter_mut() {
+            if *s == 2 {
+                *s = 0;
+            }
+        }
+        unknown.retain(|i| state.get(*i).copied() == Some(1));
+    }
+    // smoothing over the filled pixels: each the mean of its 4-neighbours (known ones as they
+    // are), a few Jacobi passes, so the rings' seams go
+    let mut next: Vec<(usize, [f32; 3])> = Vec::with_capacity(filled_all.len());
+    for _ in 0..4 {
+        next.clear();
+        for &i in &filled_all {
+            let (mut sum, mut n) = ([0.0f32; 3], 0.0f32);
+            for (j, _) in neighbours(i).iter().take(4) {
+                if let Some(p) = j.and_then(|j| img.data.get(j)) {
+                    sum = [sum[0] + p[0], sum[1] + p[1], sum[2] + p[2]];
+                    n += 1.0;
+                }
+            }
+            if n > 0.0 {
+                next.push((i, sum.map(|v| v / n)));
+            }
+        }
+        for (i, v) in &next {
+            if let Some(p) = img.data.get_mut(*i) {
+                *p = *v;
+            }
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,5 +769,30 @@ mod tests {
         assert!(infrared_map(&short, 50.0, 0).is_none());
         let _ = detect_infrared(&Plane::from_fn(200, 200, |_, _| f32::NAN), &Plane::new(200, 200), f32::NAN);
         let _ = infrared_map(&Plane::from_fn(200, 200, |_, _| 0.5), 50.0, i32::MIN);
+    }
+
+    /// Marked pixels take the tone of their surroundings: a dark speck and a dark line on a smooth
+    /// gradient vanish, nothing else moves, and an empty or mismatched mask changes nothing.
+    #[test]
+    fn inpaint_fills_the_marked_pixels_from_their_surroundings() {
+        let (w, h) = (120, 80);
+        let clean = Rgb32f::from_fn(w, h, |x, y| [0.2 + 0.5 * x as f32 / w as f32, 0.4, 0.1 + 0.3 * y as f32 / h as f32]);
+        let mut img = clean.clone();
+        let mut mask = Plane::new(w, h);
+        for (x, y) in (0..40).map(|i| (40 + i, 30 + i / 4)).chain([(20, 20), (21, 20), (20, 21), (21, 21)]) {
+            img.data[y * w + x] = [0.0; 3];
+            mask.data[y * w + x] = 1.0;
+        }
+        assert!(inpaint(&mut img, &mask));
+        let worst = img.data.iter().zip(&clean.data).map(|(a, b)| (0..3).map(|c| (a[c] - b[c]).abs()).fold(0.0, f32::max)).fold(0.0, f32::max);
+        assert!(worst < 0.03, "the marks should take the gradient's tone: worst {worst}");
+        let mut again = clean.clone();
+        assert!(!inpaint(&mut again, &Plane::new(w, h)));
+        assert_eq!(again.data, clean.data);
+        assert!(!inpaint(&mut again, &Plane::new(w + 1, h)));
+        // a mask over everything: nothing known to fill from, no panic
+        let mut all = clean.clone();
+        let _ = inpaint(&mut all, &Plane::from_fn(w, h, |_, _| 1.0));
+        let _ = inpaint(&mut Rgb32f::new(0, 0), &Plane::new(0, 0));
     }
 }

@@ -3213,6 +3213,9 @@ pub(crate) fn view_overlay(app: &LccApp, d: &DevelopSettings, alt_held: bool) ->
             opacity: app.ui.mask_overlay_opacity.clamp(0.0, 100.0).round() as u8,
         };
     }
+    if shown && app.ui.right == RightPanel::Remove && app.ui.film_dust_show_mask {
+        return Overlay::FilmDust;
+    }
     if shown && app.ui.right == RightPanel::Remove && app.ui.visualize_spots {
         return Overlay::Spots(app.ui.spots_threshold.clamp(0.0, 100.0).round() as u8);
     }

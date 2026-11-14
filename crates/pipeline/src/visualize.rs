@@ -30,6 +30,9 @@ pub enum Overlay {
     PointColorRange(u8),
     /// Visualize Spots with a threshold 0..100 (higher = more sensitive).
     Spots(u8),
+    /// The marks of the photo's infrared pass (film dust) at the settings' sensitivity and expand,
+    /// tinted over the photo.
+    FilmDust,
     /// The evaluated alpha of mask `id` (a [`lcc_develop::Mask`] id), drawn as `view` in
     /// `color` at `opacity` (0..100; the colour views only).
     Mask { id: u16, view: MaskView, color: [u8; 3], opacity: u8 },
@@ -131,6 +134,7 @@ impl Overlay {
             Overlay::None => (0, 0.0),
             Overlay::PointColorRange(i) => (1, i as f64),
             Overlay::Spots(t) => (2, t as f64),
+            Overlay::FilmDust => (7, 0.0),
             Overlay::Mask { id, view, color, opacity } => (3, pack_mask(id, view, color, opacity) as f64),
             Overlay::AllMasks { view, color, opacity } => (5, pack_mask(0, view, color, opacity) as f64),
             Overlay::HdrRange => (4, 0.0),
@@ -145,6 +149,7 @@ impl Overlay {
         match kind {
             1 => Overlay::PointColorRange(v as u8),
             2 => Overlay::Spots(v.clamp(0.0, 100.0) as u8),
+            7 => Overlay::FilmDust,
             3 if v.is_finite() && v >= 0.0 => unpack_mask(v as u64),
             4 => Overlay::HdrRange,
             5 if v.is_finite() && v >= 0.0 => {
@@ -170,6 +175,7 @@ impl Overlay {
             Overlay::None => 0,
             Overlay::PointColorRange(i) => 0x1000 + i as u64,
             Overlay::Spots(t) => 0x2000 + t as u64,
+            Overlay::FilmDust => 0x7000,
             Overlay::Mask { id, view, color, opacity } => 3 << 60 | pack_mask(id, view, color, opacity),
             Overlay::AllMasks { view, color, opacity } => 5 << 60 | pack_mask(0, view, color, opacity),
             Overlay::HdrRange => 0x4000,
@@ -219,6 +225,11 @@ pub fn apply(img: &mut Rgba8, o: Overlay, plan: &Plan<'_>, mask: Option<&Plane>,
             }
         }
         Overlay::Spots(t) => spots(img, t, plan.px_per_long),
+        Overlay::FilmDust => {
+            if let Some(a) = mask.filter(|a| (a.width, a.height) == (img.width, img.height)) {
+                mask_view(img, a, MaskView::Color, [255, 64, 48], 85);
+            }
+        }
         Overlay::Mask { view, color, opacity, .. } => {
             if let Some(a) = mask.filter(|a| (a.width, a.height) == (img.width, img.height)) {
                 mask_view(img, a, view, color, opacity);

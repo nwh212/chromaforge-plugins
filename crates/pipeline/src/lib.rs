@@ -729,6 +729,8 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         src_long,
         // the Source plug-in filters run before this stage
         source_filters.key,
+        // and film dust removal before them
+        film_dust_key(info, s),
     ));
     // a generated patch whose file appears (or goes) changes the image
     let shown: Vec<bool> = genpatch::shown(&s.spots, info.generated.as_ref()).iter().map(Option::is_some).collect();
@@ -744,6 +746,7 @@ pub fn plan<'a>(src: &Rgb32f, info: &SourceInfo, s: &'a DevelopSettings, req: &R
         local_tone::enabled(info, s),
         src_long,
         source_filters.key,
+        film_dust_key(info, s),
         &shown,
         format!("{:?}", info.avoid),
     ));
@@ -1012,6 +1015,14 @@ pub fn render_plane(src: &Rgb32f, plane: &Plane, info: &SourceInfo, s: &DevelopS
     })
 }
 
+/// What film dust removal does to a render: nothing without the pass or while off, else its settings.
+fn film_dust_key(info: &SourceInfo, s: &DevelopSettings) -> u64 {
+    match info.infrared.as_ref().filter(|_| s.film_dust.on()) {
+        Some(ir) => hash_of((Arc::as_ptr(ir) as usize, ir.width, ir.height, s.film_dust.sensitivity.to_bits(), s.film_dust.expand.to_bits())),
+        None => 0,
+    }
+}
+
 enum Src<'a> {
     Borrowed(&'a Rgb32f),
     Shared(&'a Arc<Rgb32f>),
@@ -1050,6 +1061,15 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
         None => Arc::new(frame.sample(src_img, w, h)),
     };
     lap("sample", &mut t);
+    // film dust: the infrared pass's marks filled in before anything reads the pixels
+    let sampled = if s.film_dust.on() && info.infrared.is_some() {
+        let mut img = (*sampled).clone();
+        film_dust::stage(&mut img, info, s, frame);
+        lap("film dust", &mut t);
+        Arc::new(img)
+    } else {
+        sampled
+    };
 
     // Source plug-in filters: cached by their stack; a draft that can't reuse a result runs them
     // on a reduced copy (its key marked, so a full render never takes it, nor what follows it)
@@ -1151,7 +1171,7 @@ fn render_impl(src: Src<'_>, info: &SourceInfo, s: &DevelopSettings, req: &Rende
     };
     lap("histogram", &mut t);
     let mut image = image;
-    let mask = overlay_alpha(req.overlay, &plan, &prep);
+    let mask = if req.overlay == Overlay::FilmDust { film_dust::mask_for(info, s, frame, w, h) } else { overlay_alpha(req.overlay, &plan, &prep) };
     let masks = overlay_alphas_all(req.overlay, &plan, &prep);
     visualize::apply(&mut image, req.overlay, &plan, mask.as_ref(), masks.as_deref());
     let mut image = if plan.keep.is_some() { cut(&image) } else { image };

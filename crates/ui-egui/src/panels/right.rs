@@ -3,7 +3,7 @@
 
 use egui::{Align2, Rect, Sense, pos2, vec2};
 use lcc_catalog::PhotoId;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::LccApp;
 use crate::icons::{Icon, paint};
@@ -740,36 +740,29 @@ fn mode_segmented_bar(ui: &mut egui::Ui, id: &str, active_key: &str) -> Option<&
     chosen
 }
 
-/// The Film Dust controls' arguments: the panel's sensitivity, expand and mode.
-fn film_dust_args(app: &LccApp) -> Value {
-    json!({"sensitivity": app.ui.film_dust_sensitivity, "expand": app.ui.film_dust_expand, "mode": if app.ui.film_dust_heal { "heal" } else { "fill" }})
-}
-
-/// Runs Find Film Dust and Hair at the panel's settings and says what it did (`announce`: the
-/// button; a slider's re-run only reports an error, the spots speak for themselves).
-fn find_film_dust(app: &mut LccApp, ctx: &egui::Context, announce: bool) {
-    match app.run("spot.findFilmDust", film_dust_args(app)) {
-        Ok(r) if announce => {
+/// Find Film Dust and Hair (the picture-based search, for a scan without an infrared pass) at the
+/// develop settings' sensitivity and expand, and what it did.
+fn find_film_dust(app: &mut LccApp, ctx: &egui::Context, d: &lcc_develop::DevelopSettings) {
+    let args = json!({"sensitivity": d.film_dust.sensitivity, "expand": d.film_dust.expand, "infrared": "never"});
+    match app.run("spot.findFilmDust", args) {
+        Ok(r) => {
             let n = r["added"].as_u64().unwrap_or(0);
-            let infrared = r["infrared"].as_bool().unwrap_or(false);
             app.toast(
                 ctx,
-                match (n, infrared) {
-                    (0, true) => crate::i18n::tr("The infrared pass shows no dust or hairs").to_string(),
-                    (0, false) => crate::i18n::tr("No film dust or hairs found").to_string(),
-                    (n, true) => crate::i18n::tr_format!("Healed {n} mark{} from the infrared pass", if n == 1 { "" } else { "s" }, n = n),
-                    (n, false) => crate::i18n::tr_format!("Healed {n} film dust spot{}", if n == 1 { "" } else { "s" }, n = n),
+                if n == 0 {
+                    crate::i18n::tr("No film dust or hairs found").to_string()
+                } else {
+                    crate::i18n::tr_format!("Healed {n} film dust spot{}", if n == 1 { "" } else { "s" }, n = n)
                 },
             );
         }
-        Ok(_) => {}
         Err(e) => app.toast(ctx, e),
     }
 }
 
-/// Makes (or remakes) the film-dust mask from the infrared pass at the panel's settings.
-fn film_dust_mask(app: &mut LccApp, ctx: &egui::Context) {
-    if let Err(e) = app.run("spot.filmDustMask", film_dust_args(app)) {
+/// Makes (or remakes) the film-dust mask from the infrared pass at the develop settings' sensitivity and expand.
+fn film_dust_mask(app: &mut LccApp, ctx: &egui::Context, d: &lcc_develop::DevelopSettings) {
+    if let Err(e) = app.run("spot.filmDustMask", json!({"sensitivity": d.film_dust.sensitivity, "expand": d.film_dust.expand})) {
         app.toast(ctx, e);
     }
 }
@@ -778,6 +771,8 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let d = app.session.develop_of(id).unwrap_or_default();
     header(ui, "Remove");
     let t = Tokens::get(ui.ctx());
+    // a film scanner's RGBI file: its infrared pass drives Remove Film Dust (a develop step)
+    let has_infrared = app.session.source_info(id).infrared.is_some();
 
     padded(ui, |ui| {
         // Mode icon segmented bar
@@ -822,80 +817,50 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                         Err(e) => app.toast(ui.ctx(), e),
                     }
                 }
-                if text_button(ui, "findFilmDust", crate::i18n::tr("Film Dust"), false)
-                    .on_hover_text(crate::i18n::tr(
-                        "On a scanned negative or slide: find and heal dust specks, hairs and scratches on the film. A scanner's infrared pass (a VueScan or SilverFast RGBI file) says where they are; otherwise the picture's smooth areas are searched",
-                    ))
-                    .clicked()
+                if !has_infrared
+                    && text_button(ui, "findFilmDust", crate::i18n::tr("Film Dust Spots"), false)
+                        .on_hover_text(crate::i18n::tr(
+                            "On a scanned negative or slide without an infrared pass: find the sharp bright marks of dust, hairs and scratches on smooth areas and fill each in",
+                        ))
+                        .clicked()
                 {
-                    find_film_dust(app, ui.ctx(), true);
+                    find_film_dust(app, ui.ctx(), &d);
                 }
             });
         });
 
-        // how far Film Dust reaches and how far each mark is grown; moving either re-runs the
-        // search on a photo that has its spots, or remakes its mask while that is selected, so the
-        // strength is adjusted by eye
-        let has_film_dust = d.spots.iter().any(|sp| sp.auto.is_some_and(|a| a.kind == lcc_develop::AutoSpotKind::FilmDust));
-        let film_mask = d.masks.iter().find(|m| m.name == lcc_engine::cmd::film_dust::MASK_NAME).map(|m| m.id);
-        let mask_selected = film_mask.is_some() && app.session.active_mask == film_mask;
-        let plain = |id: &'static str, label: &'static str, min: f64, max: f64, default: f64| lcc_develop::ControlSpec {
-            id,
-            label,
-            section: lcc_develop::Section::Detail,
-            min,
-            max,
-            default,
-            step: 1.0,
-            decimals: 0,
-            track: if min < 0.0 { lcc_develop::Track::Centered } else { lcc_develop::Track::Plain },
-            shade: lcc_develop::Shade::Plain,
-        };
-        let mut rerun = false;
-        for (spec, v) in [
-            (plain("ui.filmDustSensitivity", "Film dust sensitivity", 0.0, 100.0, 50.0), app.ui.film_dust_sensitivity),
-            (plain("ui.filmDustExpand", "Film dust expand", -8.0, 40.0, 2.0), app.ui.film_dust_expand),
-        ] {
-            let out = slider(ui, &spec, v as f64, true, None);
-            if let Some(nv) = out.value {
-                if spec.id == "ui.filmDustExpand" {
-                    app.ui.film_dust_expand = nv as f32;
-                } else {
-                    app.ui.film_dust_sensitivity = nv as f32;
-                }
+        // Remove Film Dust (a scanner's infrared pass): a develop step with its sensitivity and
+        // expand, a tint of what it will fill, and the marks as a mask for the brush and the
+        // generative fill
+        if has_infrared {
+            let mut on = d.film_dust.on();
+            let r = ui.checkbox(&mut on, crate::i18n::tr("Remove Film Dust")).on_hover_text(crate::i18n::tr(
+                "Fill in the dust, hairs and scratches the scanner's infrared pass shows, before the picture is converted (as the scanner's own infrared cleaning does)",
+            ));
+            register(ui.ctx(), "checkbox:filmDustRemove", r.rect);
+            if r.changed() {
+                let _ = app.run("develop.set", json!({"control": "filmDust.remove", "value": if on { 1.0 } else { 0.0 }}));
             }
-            // (one search per release, or per typed value, not one per pixel of the drag)
-            rerun |= out.drag_stopped || (out.value.is_some() && !ui.ctx().input(|i| i.pointer.any_down()));
-        }
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(crate::i18n::tr("Fill with")).size(11.5).color(t.text_dim));
-            let name = |heal: bool| if heal { crate::i18n::tr("Heal") } else { crate::i18n::tr("Content-Aware") };
-            let r = egui::ComboBox::from_id_salt("filmDustMode").selected_text(name(app.ui.film_dust_heal)).show_ui(ui, |ui| {
-                for heal in [false, true] {
-                    if ui.selectable_label(app.ui.film_dust_heal == heal, name(heal)).clicked() && app.ui.film_dust_heal != heal {
-                        app.ui.film_dust_heal = heal;
-                        rerun = true;
+            super::edit::control(app, ui, &d, "filmDust.sensitivity", true);
+            super::edit::control(app, ui, &d, "filmDust.expand", true);
+            ui.horizontal(|ui| {
+                let r = ui.checkbox(&mut app.ui.film_dust_show_mask, crate::i18n::tr("Show infrared mask")).on_hover_text(crate::i18n::tr(
+                    "Tint the marks the infrared pass shows at these settings, to see what will be filled in",
+                ));
+                register(ui.ctx(), "checkbox:filmDustShowMask", r.rect);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let film_mask = d.masks.iter().find(|m| m.name == lcc_engine::cmd::film_dust::MASK_NAME).map(|m| m.id);
+                    let mask_selected = film_mask.is_some() && app.session.active_mask == film_mask;
+                    if text_button(ui, "filmDustMask", crate::i18n::tr("Show as Mask"), mask_selected)
+                        .on_hover_text(crate::i18n::tr(
+                            "The infrared pass's marks as a mask you can look at, brush and fill: Fill Selected Mask or Generate into Selected Mask removes what it covers",
+                        ))
+                        .clicked()
+                    {
+                        film_dust_mask(app, ui.ctx(), &d);
                     }
-                }
+                });
             });
-            register(ui.ctx(), "filmDustMode", r.response.rect);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if text_button(ui, "filmDustMask", crate::i18n::tr("Show as Mask"), mask_selected)
-                    .on_hover_text(crate::i18n::tr(
-                        "The infrared pass's marks as a mask you can look at, brush and fill: Fill Selected Mask or Generate into Selected Mask removes what it covers",
-                    ))
-                    .clicked()
-                {
-                    film_dust_mask(app, ui.ctx());
-                }
-            });
-        });
-        if rerun {
-            if mask_selected {
-                film_dust_mask(app, ui.ctx());
-            } else if has_film_dust {
-                find_film_dust(app, ui.ctx(), false);
-            }
         }
 
         // the camera body's dust map, when it has one
