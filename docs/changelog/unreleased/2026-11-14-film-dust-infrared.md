@@ -1,0 +1,2 @@
+## Film
+- A film scanner's RGBI TIFF (four 16-bit samples, no ExtraSamples, written by VueScan or SilverFast) decodes as opaque RGB with the infrared pass as `Decoded::infrared` (and `SourceInfo::infrared`, through the geometry with `render_plane`), no longer as RGBA. `spot.findFilmDust` (Remove ▸ Film Dust) heals the dips of that pass (specks, patches and lines, `lcc_pipeline::film_dust::detect_infrared`), and falls back to the picture-based search (top-hat on the converted positive) without one; `infrared: auto | only | never`.

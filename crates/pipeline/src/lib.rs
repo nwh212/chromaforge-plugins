@@ -147,6 +147,10 @@ pub struct SourceInfo {
     /// their colour (`lcc_codecs::unflatten`) and carries this plane through the geometry
     /// beside the render ([`render_alpha`], issue #2976).
     pub alpha: Option<Arc<Plane>>,
+    /// A film scanner's infrared pass ([`lcc_codecs::Decoded::infrared`]), the source's size and
+    /// orientation: dark under dust, hairs and scratches. Never rendered; Find Film Dust reads it
+    /// through the geometry ([`render_plane`]).
+    pub infrared: Option<Arc<Plane>>,
     /// The photo's generative fill patches ([`genpatch`]), read from the library by the engine.
     pub generated: Option<genpatch::GenStore>,
     /// Areas content-aware fill never copies from (faces): `[x0, y0, x1, y1]` normalized to the
@@ -206,6 +210,7 @@ impl Default for SourceInfo {
             colorimetric: false,
             rendered_rgb: false,
             alpha: None,
+            infrared: None,
             generated: None,
             avoid: None,
             pixels: None,
@@ -986,11 +991,20 @@ pub fn render_cached(src: &Arc<Rgb32f>, info: &SourceInfo, s: &DevelopSettings, 
 /// output size. Develop settings never touch it; areas the warp brings in from outside the source
 /// are transparent. `None` when the source has no alpha or a plane that does not match `src`.
 pub fn render_alpha(src: &Rgb32f, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) -> Option<Plane> {
-    let alpha = info.alpha.as_deref().filter(|a| a.width == src.width && a.height == src.height)?;
+    render_plane(src, info.alpha.as_deref()?, info, s, req)
+}
+
+/// A plane of the source's size (its alpha, a scanner's infrared pass) through the same geometry
+/// as [`render`] of the same arguments (see [`render_alpha`]). `None` when the plane is not the
+/// size of `src`.
+pub fn render_plane(src: &Rgb32f, plane: &Plane, info: &SourceInfo, s: &DevelopSettings, req: &RenderRequest) -> Option<Plane> {
+    if plane.width != src.width || plane.height != src.height {
+        return None;
+    }
     let effective = s.effective();
     let rendition = settings_for(&effective, req);
     let plan = plan(src, info, &rendition, req);
-    let a = plan.frame.sample_alpha(alpha, plan.w, plan.h);
+    let a = plan.frame.sample_alpha(plane, plan.w, plan.h);
     // (a grown window is cut back to the request, as in `render_impl`)
     Some(match plan.keep {
         Some(k) => a.crop(k.x, k.y, k.w, k.h),

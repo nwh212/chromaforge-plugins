@@ -510,3 +510,52 @@ fn a_body_map_change_drops_only_that_bodys_decoded_sources() {
     assert!(s.media.get(none, SourceLevel::Preview).is_some(), "no map went into this one");
     let _ = crate::sensor_maps::clear("SN-SRC-A", true, true);
 }
+
+/// A film scanner's RGBI TIFF: a flat mid-grey picture (nothing to find in it) whose infrared
+/// pass has one dark speck and one dark hair; Find Film Dust heals both from the pass, and says
+/// it did; without the pass it finds nothing, and asked for the pass on a plain photo it refuses.
+#[test]
+fn film_dust_is_healed_from_a_scanners_infrared_pass() {
+    let dir = temp_dir("film-ir");
+    let (w, h) = (320u32, 240u32);
+    let px = |x: u32, y: u32| {
+        let speck = (x as i64 - 80).pow(2) + (y as i64 - 60).pow(2) <= 4;
+        let hair = (120..260).contains(&x) && y as i64 == 150 + (x as i64 - 120) / 7;
+        vec![30000u16, 25000, 20000, if speck || hair { 3000 } else { 42000 }]
+    };
+    let path = dir.join("scan.tif");
+    std::fs::write(&path, lcc_testkit::tiff16(w, h, 4, "VueScan 9 x64 (9.8.52)", None, px)).unwrap();
+    let mut s = Session::new().with_fs();
+    s.execute("library.import", &json!({"paths": [path.to_string_lossy()]})).unwrap();
+    let id = s.active().unwrap();
+    // decoded as an opaque picture, the pass beside it
+    let info = s.source_info(id);
+    let _ = s.source_now(id, crate::media::SourceLevel::Preview).unwrap();
+    let info = if info.infrared.is_none() { s.source_info(id) } else { info };
+    assert!(info.infrared.is_some(), "the infrared pass is kept with the source");
+    assert!(info.alpha.is_none(), "and is not transparency");
+
+    let r = s.execute("spot.findFilmDust", &json!({})).unwrap();
+    assert_eq!(r["infrared"], true);
+    let spots = r["spots"].as_array().unwrap();
+    let near = |p: &Value, x: f64, y: f64| (p[0].as_f64().unwrap() - x).abs() < 0.02 && (p[1].as_f64().unwrap() - y).abs() < 0.02;
+    assert!(
+        spots.iter().any(|sp| sp["points"].as_array().unwrap().len() == 1 && near(&sp["points"][0], 80.0 / 320.0, 60.0 / 240.0)),
+        "speck: {spots:?}"
+    );
+    assert!(spots.iter().any(|sp| sp["points"].as_array().unwrap().len() >= 3), "hair as a stroke: {spots:?}");
+    let d = s.develop_of(id).unwrap();
+    assert_eq!(d.spots.len(), spots.len());
+    assert!(d.spots.iter().all(|sp| sp.mode == lcc_develop::SpotMode::Heal));
+
+    // the picture alone shows nothing (it is flat), and asking for the pass on a plain photo is refused
+    let r = s.execute("spot.findFilmDust", &json!({"infrared": "never", "add": false})).unwrap();
+    assert_eq!((r["infrared"].as_bool(), r["added"].as_u64()), (Some(false), Some(0)));
+    let plain = dir.join("plain.png");
+    let img = lcc_raster::Rgba8 { width: 80, height: 60, data: vec![[90, 100, 110, 255]; 4800] };
+    std::fs::write(&plain, lcc_codecs::encode_png(&lcc_codecs::EncodeImage::rgba8(&img), &Default::default()).unwrap()).unwrap();
+    s.execute("library.import", &json!({"paths": [plain.to_string_lossy()]})).unwrap();
+    let err = s.execute("spot.findFilmDust", &json!({"infrared": "only"})).unwrap_err().to_string();
+    assert!(err.contains("infrared"), "{err}");
+    assert!(s.execute("spot.findFilmDust", &json!({"infrared": "sometimes"})).is_err());
+}

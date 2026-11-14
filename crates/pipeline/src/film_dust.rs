@@ -7,6 +7,13 @@
 //! blobs; a small roundish blob is a speck (one heal spot), a long thin one a hair or scratch (a
 //! heal stroke along its centre line).
 //!
+//! A film scanner's **infrared pass** ([`detect_infrared`]: a VueScan or SilverFast RGBI file)
+//! makes this certain: film dyes pass infrared, dust, hairs and scratches block it, so the pass
+//! is bright everywhere but under a defect. It is divided by its own local level (a grey closing
+//! fills every dip narrower than the window: the lamp's falloff and the little the dyes absorb
+//! stay out of it), and the dips are grouped into the same specks, lines and, for anything larger,
+//! patches. The picture itself is only read for where to heal a line from.
+//!
 //! Sources: morphological top-hat transform (J. Serra, "Image Analysis and Mathematical
 //! Morphology", 1982); blob shape from second moments; own design otherwise.
 
@@ -138,17 +145,85 @@ pub fn detect(img: &Rgba8, sensitivity: f32) -> Vec<FilmDefect> {
         let t = tophat.get(i).copied().unwrap_or(0.0);
         t > min_bright && t > contrast * texture(i)
     };
+    let max_blob = ((0.06 * long) * (0.004 * long)).max(64.0) as usize;
+    let mut out = Vec::new();
+    for px in blobs(w, h, max_blob, candidate, |i| tophat.get(i).copied().unwrap_or(0.0)) {
+        if let Some(d) = classify(&px, &l, long, Certainty::Guessed) {
+            out.push(d);
+        }
+    }
+    out.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+    out.truncate(MAX_DEFECTS);
+    out
+}
+
+/// Film dust, hairs and scratches from a scanner's infrared pass `ir` (the picture's size, 0..1:
+/// bright where the film is clear) at `sensitivity` 0..100, as [`detect`] reports them; `luma`
+/// (the picture, the same size) only says which side of a line to heal from. Dips of the pass
+/// below its local level are defects, whatever the picture shows there; a blob too large for a
+/// speck or too wide for a line is a patch (one round heal spot over it). Outside the film
+/// (the scanner's gate, where the pass is dark everywhere) nothing is reported.
+pub fn detect_infrared(ir: &Plane, luma: &Plane, sensitivity: f32) -> Vec<FilmDefect> {
+    let (w, h) = (ir.width, ir.height);
+    if w < 64 || h < 64 || ir.data.len() < w * h || luma.width != w || luma.height != h || luma.data.len() < w * h {
+        return Vec::new();
+    }
+    let long = w.max(h) as f32;
+    // the local level: a grey closing (a maximum, then a minimum, over a window) fills every dip
+    // narrower than the window (about 2.5 % of the long edge: 60 px at 2600), so a patch that
+    // wide is a dip through and through, not only at its rim
+    let r = ((0.006 * long).round() as usize).max(3);
+    let level = rank(&rank(ir, 2 * r, true), 2 * r, false);
+    // the film itself: where that level is at least a fifth of its typical value, less a band the
+    // window's width along its edge (the scanner's gate around a frame, and anything past the
+    // film's edge, is dark over a far wider area; next to it the closing reaches onto the film)
+    let mut sorted: Vec<f32> = level.data.iter().copied().filter(|v| v.is_finite()).collect();
+    sorted.sort_by(f32::total_cmp);
+    let typical = sorted.get(sorted.len() / 2).copied().unwrap_or(0.0);
+    let film = (0.2 * typical).max(1e-3);
+    let lit = Plane::from_fn(w, h, |x, y| if level.get(x, y) >= film { 1.0 } else { 0.0 });
+    let inside = rank(&lit, 2 * r + 1, false);
+    let s = (sensitivity / 100.0).clamp(0.0, 1.0);
+    if !s.is_finite() {
+        return Vec::new();
+    }
+    // how far below its level the pass must fall: a third at the default; dust blocks it almost
+    // entirely, a hair or a faint scratch less
+    let min_drop = 0.5 - 0.35 * s;
+    let drop = |i: usize| {
+        let (v, l) = (ir.data.get(i).copied().unwrap_or(1.0), level.data.get(i).copied().unwrap_or(0.0));
+        if inside.data.get(i).copied().unwrap_or(0.0) < 0.5 || l <= 0.0 { 0.0 } else { (1.0 - v / l).clamp(0.0, 1.0) }
+    };
+    let margin = 2 * r + 1;
+    let candidate = |i: usize| {
+        let (x, y) = (i % w, i / w);
+        x >= margin && y >= margin && x + margin < w && y + margin < h && drop(i) > min_drop
+    };
+    // a hair may cross the whole frame, a patch be a few percent of the long edge across
+    let max_blob = ((0.6 * long) * (0.012 * long)).max(256.0) as usize;
+    let mut out = Vec::new();
+    for px in blobs(w, h, max_blob, candidate, drop) {
+        if let Some(d) = classify(&px, luma, long, Certainty::Infrared) {
+            out.push(d);
+        }
+    }
+    out.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+    out.truncate(MAX_DEFECTS);
+    out
+}
+
+/// The 8-connected blobs of `candidate` pixels of a `w`×`h` image, each as its pixels with
+/// `strength` there; a blob of more than `max_blob` pixels (a bright structure, a whole area) or
+/// fewer than 2 (one noisy pixel) is left out.
+fn blobs(w: usize, h: usize, max_blob: usize, candidate: impl Fn(usize) -> bool, strength: impl Fn(usize) -> f32) -> Vec<Vec<(usize, usize, f32)>> {
     let mut seen = vec![false; w * h];
     let mut out = Vec::new();
-    let max_blob = ((0.06 * long) * (0.004 * long)).max(64.0) as usize;
     let mut stack = Vec::new();
-    let mut px: Vec<(usize, usize, f32)> = Vec::new();
     for start in 0..w * h {
         if seen.get(start).copied().unwrap_or(true) || !candidate(start) {
             continue;
         }
-        // one blob of candidate pixels (8-connected)
-        px.clear();
+        let mut px: Vec<(usize, usize, f32)> = Vec::new();
         stack.clear();
         stack.push(start);
         if let Some(s) = seen.get_mut(start) {
@@ -157,7 +232,7 @@ pub fn detect(img: &Rgba8, sensitivity: f32) -> Vec<FilmDefect> {
         let mut too_big = false;
         while let Some(i) = stack.pop() {
             let (x, y) = (i % w, i / w);
-            px.push((x, y, tophat.get(i).copied().unwrap_or(0.0)));
+            px.push((x, y, strength(i)));
             if px.len() > max_blob {
                 too_big = true;
             }
@@ -177,21 +252,27 @@ pub fn detect(img: &Rgba8, sensitivity: f32) -> Vec<FilmDefect> {
                 }
             }
         }
-        if too_big || px.len() < 2 {
-            continue; // a bright structure, not dust (or a single noisy pixel)
-        }
-        if let Some(d) = classify(&px, &l, long) {
-            out.push(d);
+        if !too_big && px.len() >= 2 {
+            out.push(px);
         }
     }
-    out.sort_by(|a, b| b.strength.total_cmp(&a.strength));
-    out.truncate(MAX_DEFECTS);
     out
+}
+
+/// How sure a blob is a defect: guessed from the picture (a bright feature that could be a
+/// highlight: strict shape rules, and a line must lie on one background), or read from the
+/// scanner's infrared pass (certain: looser sizes, and what fits neither a speck nor a line is a
+/// patch).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Certainty {
+    Guessed,
+    Infrared,
 }
 
 /// A blob's shape: a speck when small and roundish, a hair or scratch when long and thin,
 /// `None` otherwise (a bright edge or texture).
-fn classify(px: &[(usize, usize, f32)], luma: &Plane, long: f32) -> Option<FilmDefect> {
+fn classify(px: &[(usize, usize, f32)], luma: &Plane, long: f32, how: Certainty) -> Option<FilmDefect> {
+    let certain = how == Certainty::Infrared;
     let (w, h) = (luma.width, luma.height);
     let n = px.len() as f64;
     let (mx, my) = px.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0 as f64, a.1 + p.1 as f64));
@@ -215,11 +296,12 @@ fn classify(px: &[(usize, usize, f32)], luma: &Plane, long: f32) -> Option<FilmD
     let long = f64::from(long);
     let to_norm = |x: f64, y: f64| ((x + 0.5) / w as f64, (y + 0.5) / h as f64);
     let elongation = (l1 / l2.max(0.05)).sqrt();
-    if elongation < 2.5 && length <= 0.008 * long {
+    let (max_speck, max_width) = if certain { (0.014 * long, 0.005 * long) } else { (0.008 * long, 0.003 * long) };
+    if elongation < 2.5 && length <= max_speck {
         // a speck: heal a circle a little larger than it
         return Some(FilmDefect { points: vec![to_norm(mx, my)], radius: (length / 2.0 * 1.6 + 1.0) / long, strength, source: None });
     }
-    if elongation >= 3.0 && width <= 0.003 * long && length >= 0.008 * long {
+    if elongation >= 3.0 && width <= max_width && length >= 0.008 * long {
         // a hair or scratch: its centre line, as the mean position along the main axis in steps
         let (ax, ay) = if sxy.abs() < 1e-12 && sxx >= syy {
             (1.0, 0.0)
@@ -243,12 +325,24 @@ fn classify(px: &[(usize, usize, f32)], luma: &Plane, long: f32) -> Option<FilmD
             }
         }
         let path: Vec<(f64, f64)> = sums.iter().filter(|s| s.2 > 0).map(|s| (s.0 / s.2 as f64, s.1 / s.2 as f64)).collect();
-        if path.len() >= 2 && same_both_sides(&path, luma, width + 2.0, 0.004 * long, strength) {
+        if path.len() >= 2 && (certain || same_both_sides(&path, luma, width + 2.0, 0.004 * long, strength)) {
             let points = path.iter().map(|p| to_norm(p.0, p.1)).collect();
             let radius = width * 1.5 + 1.5;
             let source = side_source(&path, luma, (ay, -ax), 2.5 * radius + 2.0).map(|d| (d.0 / w as f64, d.1 / h as f64));
             return Some(FilmDefect { points, radius: radius / long, strength, source });
         }
+    }
+    if certain {
+        // a patch (a fibre's clump, a smudge): one round heal spot covering its extent
+        let (x0, x1) = px.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, p| (a.0.min(p.0 as f64), a.1.max(p.0 as f64)));
+        let (y0, y1) = px.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, p| (a.0.min(p.1 as f64), a.1.max(p.1 as f64)));
+        let across = ((x1 - x0 + 1.0).powi(2) + (y1 - y0 + 1.0).powi(2)).sqrt();
+        return Some(FilmDefect {
+            points: vec![to_norm((x0 + x1) / 2.0, (y0 + y1) / 2.0)],
+            radius: (across / 2.0 * 1.25 + 2.0) / long,
+            strength,
+            source: None,
+        });
     }
     None
 }
@@ -418,6 +512,51 @@ mod tests {
         assert!(detect(&scene(w, h), 100.0).len() <= 2);
     }
 
+    /// An infrared pass: flat with a gentle falloff, a few dark specks, a thin dark hair and a
+    /// large dark patch, over a picture that shows none of them (the specks are read from the
+    /// pass alone); the dark gate around the frame gives nothing.
+    #[test]
+    fn the_infrared_pass_gives_specks_a_hair_a_patch_and_nothing_at_the_gate() {
+        let (w, h) = (800, 600);
+        let luma = Plane::from_fn(w, h, |x, _| 0.3 + 0.4 * x as f32 / w as f32);
+        let mut ir = Plane::from_fn(w, h, |x, y| if x < 30 || y < 30 || x >= w - 30 || y >= h - 30 { 0.01 } else { 0.6 - 0.1 * y as f32 / h as f32 });
+        let dip = |ir: &mut Plane, cx: usize, cy: usize, r: i64, v: f32| {
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx * dx + dy * dy <= r * r {
+                        ir.data[(cy as i64 + dy) as usize * w + (cx as i64 + dx) as usize] = v;
+                    }
+                }
+            }
+        };
+        for (x, y) in [(100, 100), (300, 80), (500, 200), (650, 120)] {
+            dip(&mut ir, x, y, 1, 0.05);
+        }
+        for i in 0..1200 {
+            let t = i as f32 / 1200.0;
+            let (x, y) = (150.0 + 400.0 * t, 350.0 + 60.0 * (t * 3.0).sin());
+            ir.data[y as usize * w + x as usize] = 0.2;
+            ir.data[(y as usize + 1) * w + x as usize] = 0.2;
+        }
+        dip(&mut ir, 400, 500, 4, 0.1);
+        let found = detect_infrared(&ir, &luma, 50.0);
+        let specks: Vec<_> = found.iter().filter(|d| !d.is_line()).collect();
+        for (x, y) in [(100, 100), (300, 80), (500, 200), (650, 120)] {
+            let (nx, ny) = (x as f64 / w as f64, y as f64 / h as f64);
+            assert!(
+                specks.iter().any(|d| (d.points[0].0 - nx).abs() < 0.01 && (d.points[0].1 - ny).abs() < 0.01),
+                "speck at {x},{y} missed: {found:?}"
+            );
+        }
+        assert!(found.iter().any(|d| d.is_line() && d.points.len() >= 5), "the hair was missed: {found:?}");
+        let patch = specks.iter().find(|d| (d.points[0].0 - 0.5).abs() < 0.01 && (d.points[0].1 - 500.0 / 600.0).abs() < 0.01);
+        assert!(patch.is_some_and(|p| p.radius * w as f64 >= 5.0), "the patch should be one spot covering it: {patch:?}");
+        // nothing at the gate's edge, and nothing on a clean pass
+        assert!(found.iter().all(|d| d.points.iter().all(|p| p.0 > 0.03 && p.0 < 0.97 && p.1 > 0.03 && p.1 < 0.97)), "{found:?}");
+        let clean = Plane::from_fn(w, h, |_, y| 0.6 - 0.1 * y as f32 / h as f32);
+        assert!(detect_infrared(&clean, &luma, 100.0).is_empty());
+    }
+
     #[test]
     fn hostile_input_never_panics() {
         for (w, h) in [(0, 0), (1, 1), (63, 63), (64, 64), (1000, 64)] {
@@ -427,5 +566,12 @@ mod tests {
         let short = Rgba8 { width: 100, height: 100, data: vec![[0; 4]; 10] };
         assert!(detect(&short, 50.0).is_empty());
         let _ = detect(&scene(200, 200), f32::NAN);
+        for (w, h) in [(0, 0), (1, 1), (63, 63), (64, 64)] {
+            let _ = detect_infrared(&Plane::new(w, h), &Plane::new(w, h), 50.0);
+        }
+        let _ = detect_infrared(&Plane::new(100, 100), &Plane::new(90, 100), 50.0);
+        let short = Plane { width: 100, height: 100, data: vec![0.0; 10] };
+        assert!(detect_infrared(&short, &Plane::new(100, 100), 50.0).is_empty());
+        let _ = detect_infrared(&Plane::from_fn(200, 200, |_, _| f32::NAN), &Plane::new(200, 200), f32::NAN);
     }
 }

@@ -790,19 +790,21 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                 }
                 if text_button(ui, "findFilmDust", crate::i18n::tr("Film Dust"), false)
                     .on_hover_text(crate::i18n::tr(
-                        "On a scanned negative or slide: automatically find and heal dust specks, hairs and scratches on smooth areas",
+                        "On a scanned negative or slide: find and heal dust specks, hairs and scratches on the film. A scanner's infrared pass (a VueScan or SilverFast RGBI file) says where they are; otherwise the picture's smooth areas are searched",
                     ))
                     .clicked()
                 {
                     match app.run("spot.findFilmDust", json!({})) {
                         Ok(r) => {
                             let n = r["added"].as_u64().unwrap_or(0);
+                            let infrared = r["infrared"].as_bool().unwrap_or(false);
                             app.toast(
                                 ui.ctx(),
-                                if n == 0 {
-                                    crate::i18n::tr("No film dust or hairs found").to_string()
-                                } else {
-                                    crate::i18n::tr_format!("Healed {n} film dust spot{}", if n == 1 { "" } else { "s" }, n = n)
+                                match (n, infrared) {
+                                    (0, true) => crate::i18n::tr("The infrared pass shows no dust or hairs").to_string(),
+                                    (0, false) => crate::i18n::tr("No film dust or hairs found").to_string(),
+                                    (n, true) => crate::i18n::tr_format!("Healed {n} mark{} from the infrared pass", if n == 1 { "" } else { "s" }, n = n),
+                                    (n, false) => crate::i18n::tr_format!("Healed {n} film dust spot{}", if n == 1 { "" } else { "s" }, n = n),
                                 },
                             );
                         }
