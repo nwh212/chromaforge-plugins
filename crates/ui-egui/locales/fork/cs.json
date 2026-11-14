@@ -901,6 +901,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "Doplní upřesnění místa, město, kraj a zemi podle GPS. Vypnuto, dokud nezvolíte poskytovatele.",
   "Fills made earlier for this photo, not on it now:": "Výplně vytvořené dříve pro tuto fotografii, které na ní teď nejsou:",
   "Film Dust": "Prach na filmu",
+  "Film dust sensitivity": "Citlivost na prach na filmu",
   "Film recipe": "Filmový recept",
   "Filmstrip size": "Velikost filmového pásu",
   "Filter by Color Label": "Filtrovat podle barevného štítku",

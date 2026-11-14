@@ -956,6 +956,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "Täyttää alisijainnin, kaupungin, osavaltion ja maan GPS:stä. Pois päältä, kunnes valitset palveluntarjoajan.",
   "Fills made earlier for this photo, not on it now:": "Tälle kuvalle aiemmin tehdyt täytöt, joita siinä ei nyt ole:",
   "Film Dust": "Filmin pöly",
+  "Film dust sensitivity": "Filmin pölyn herkkyys",
   "Film recipe": "Filmiresepti",
   "Filmstrip size": "Filmiliuskan koko",
   "Filter by Color Label": "Suodata värimerkinnän mukaan",

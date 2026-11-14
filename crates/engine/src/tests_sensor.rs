@@ -547,6 +547,18 @@ fn film_dust_is_healed_from_a_scanners_infrared_pass() {
     let d = s.develop_of(id).unwrap();
     assert_eq!(d.spots.len(), spots.len());
     assert!(d.spots.iter().all(|sp| sp.mode == lcc_develop::SpotMode::Heal));
+    assert!(
+        d.spots.iter().all(|sp| sp.auto.is_some_and(|a| a.kind == lcc_develop::AutoSpotKind::FilmDust && a.confirmed)),
+        "tagged as film dust from the pass"
+    );
+    // a run at another sensitivity replaces its own spots (the user's stay), so the strength can be adjusted
+    s.execute("spot.add", &json!({"mode": "heal", "points": [[0.9, 0.9]], "size": 0.01})).unwrap();
+    let r = s.execute("spot.findFilmDust", &json!({"sensitivity": 80})).unwrap();
+    assert_eq!(r["replaced"].as_u64(), Some(spots.len() as u64));
+    let d = s.develop_of(id).unwrap();
+    assert_eq!(d.spots.iter().filter(|sp| sp.auto.is_none()).count(), 1, "the user's spot stays");
+    assert_eq!(d.spots.iter().filter(|sp| sp.auto.is_some()).count(), r["added"].as_u64().unwrap() as usize);
+    assert!(s.execute("spot.findFilmDust", &json!({"sensitivity": f64::NAN})).is_ok(), "a bad sensitivity is clamped, not a crash");
 
     // the picture alone shows nothing (it is flat), and asking for the pass on a plain photo is refused
     let r = s.execute("spot.findFilmDust", &json!({"infrared": "never", "add": false})).unwrap();

@@ -983,6 +983,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "Fyller i delplats, ort, delstat och land från GPS. Av tills du väljer en leverantör.",
   "Fills made earlier for this photo, not on it now:": "Fyllningar som gjorts tidigare för det här fotot, men som inte finns på det nu:",
   "Film Dust": "Filmdamm",
+  "Film dust sensitivity": "Känslighet för filmdamm",
   "Film recipe": "Filmrecept",
   "Filmstrip size": "Filmremsans storlek",
   "Filter by Color Label": "Filtrera efter färgetikett",

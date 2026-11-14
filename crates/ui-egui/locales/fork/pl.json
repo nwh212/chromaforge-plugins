@@ -991,6 +991,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "Uzupełnia miejsce, miasto, region i kraj na podstawie GPS. Wyłączone, dopóki nie wybierzesz dostawcy.",
   "Fills made earlier for this photo, not on it now:": "Wypełnienia utworzone wcześniej dla tego zdjęcia, których teraz na nim nie ma:",
   "Film Dust": "Kurz na filmie",
+  "Film dust sensitivity": "Czułość na kurz na filmie",
   "Film recipe": "Przepis filmowy",
   "Filmstrip size": "Rozmiar paska filmowego",
   "Filter by Color Label": "Filtruj według etykiety koloru",

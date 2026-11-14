@@ -740,6 +740,28 @@ fn mode_segmented_bar(ui: &mut egui::Ui, id: &str, active_key: &str) -> Option<&
     chosen
 }
 
+/// Runs Find Film Dust and Hair at the panel's sensitivity and says what it did (`announce`: the
+/// button; a slider's re-run only reports an error, the spots speak for themselves).
+fn find_film_dust(app: &mut LccApp, ctx: &egui::Context, announce: bool) {
+    match app.run("spot.findFilmDust", json!({"sensitivity": app.ui.film_dust_sensitivity})) {
+        Ok(r) if announce => {
+            let n = r["added"].as_u64().unwrap_or(0);
+            let infrared = r["infrared"].as_bool().unwrap_or(false);
+            app.toast(
+                ctx,
+                match (n, infrared) {
+                    (0, true) => crate::i18n::tr("The infrared pass shows no dust or hairs").to_string(),
+                    (0, false) => crate::i18n::tr("No film dust or hairs found").to_string(),
+                    (n, true) => crate::i18n::tr_format!("Healed {n} mark{} from the infrared pass", if n == 1 { "" } else { "s" }, n = n),
+                    (n, false) => crate::i18n::tr_format!("Healed {n} film dust spot{}", if n == 1 { "" } else { "s" }, n = n),
+                },
+            );
+        }
+        Ok(_) => {}
+        Err(e) => app.toast(ctx, e),
+    }
+}
+
 fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
     let d = app.session.develop_of(id).unwrap_or_default();
     header(ui, "Remove");
@@ -794,25 +816,34 @@ fn remove(app: &mut LccApp, ui: &mut egui::Ui, id: PhotoId) {
                     ))
                     .clicked()
                 {
-                    match app.run("spot.findFilmDust", json!({})) {
-                        Ok(r) => {
-                            let n = r["added"].as_u64().unwrap_or(0);
-                            let infrared = r["infrared"].as_bool().unwrap_or(false);
-                            app.toast(
-                                ui.ctx(),
-                                match (n, infrared) {
-                                    (0, true) => crate::i18n::tr("The infrared pass shows no dust or hairs").to_string(),
-                                    (0, false) => crate::i18n::tr("No film dust or hairs found").to_string(),
-                                    (n, true) => crate::i18n::tr_format!("Healed {n} mark{} from the infrared pass", if n == 1 { "" } else { "s" }, n = n),
-                                    (n, false) => crate::i18n::tr_format!("Healed {n} film dust spot{}", if n == 1 { "" } else { "s" }, n = n),
-                                },
-                            );
-                        }
-                        Err(e) => app.toast(ui.ctx(), e),
-                    }
+                    find_film_dust(app, ui.ctx(), true);
                 }
             });
         });
+
+        // how far Film Dust reaches; moving it re-runs the search on a photo that has its spots,
+        // so the strength is adjusted by eye
+        let has_film_dust = d.spots.iter().any(|sp| sp.auto.is_some_and(|a| a.kind == lcc_develop::AutoSpotKind::FilmDust));
+        let spec = lcc_develop::ControlSpec {
+            id: "ui.filmDustSensitivity",
+            label: "Film dust sensitivity",
+            section: lcc_develop::Section::Detail,
+            min: 0.0,
+            max: 100.0,
+            default: 50.0,
+            step: 1.0,
+            decimals: 0,
+            track: lcc_develop::Track::Plain,
+            shade: lcc_develop::Shade::Plain,
+        };
+        let out = slider(ui, &spec, app.ui.film_dust_sensitivity as f64, true, None);
+        if let Some(v) = out.value {
+            app.ui.film_dust_sensitivity = v as f32;
+        }
+        // (one search per release, or per typed value, not one per pixel of the drag)
+        if has_film_dust && (out.drag_stopped || (out.value.is_some() && !ui.ctx().input(|i| i.pointer.any_down()))) {
+            find_film_dust(app, ui.ctx(), false);
+        }
 
         // the camera body's dust map, when it has one
         let body = app.session.source_info(id).pixels.and_then(|p| p.body);

@@ -969,6 +969,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "根據 GPS 填寫子位置、城市、州/省和國家/地區。選擇提供者之前為關閉狀態。",
   "Fills made earlier for this photo, not on it now:": "先前為此照片建立、目前未套用的填色：",
   "Film Dust": "底片灰塵",
+  "Film dust sensitivity": "底片灰塵靈敏度",
   "Film recipe": "底片配方",
   "Filmstrip size": "底片顯示窗格大小",
   "Filter by Color Label": "依色彩標籤篩選",

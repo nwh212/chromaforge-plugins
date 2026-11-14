@@ -898,6 +898,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "Заповнює поля Район, Місто, Область і Країна за GPS. Вимкнено, доки не вибрано постачальника.",
   "Fills made earlier for this photo, not on it now:": "Заповнення, зроблені раніше для цього фото і зараз не застосовані:",
   "Film Dust": "Пил на плівці",
+  "Film dust sensitivity": "Чутливість до пилу на плівці",
   "Film recipe": "Плівковий рецепт",
   "Filmstrip size": "Розмір стрічки",
   "Filter by Color Label": "Фільтр за кольоровою міткою",

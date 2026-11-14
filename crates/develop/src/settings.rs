@@ -2169,6 +2169,8 @@ impl Spot {
 pub enum AutoSpotKind {
     /// Sensor dust.
     Dust,
+    /// Dust, a hair or a scratch on scanned film (Find Film Dust and Hair).
+    FilmDust,
 }
 
 /// A spot an automatic finder added: what it is and how sure it was.

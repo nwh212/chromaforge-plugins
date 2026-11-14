@@ -4,7 +4,7 @@
 //! are; without one the converted picture is searched for the sharp bright marks they leave
 //! ([`lcc_pipeline::film_dust`]).
 
-use lcc_develop::{Spot, SpotMode};
+use lcc_develop::{AutoSpot, AutoSpotKind, Spot, SpotMode};
 use lcc_geom::{Affine, Point};
 use lcc_pipeline::RenderRequest;
 use serde_json::{Value, json};
@@ -37,7 +37,8 @@ fn find_film_dust(s: &mut Session, p: &Value) -> Result<Value> {
         "never" | "false" => Source::Picture,
         other => return Err(bad(c, format!("`infrared` must be auto, only or never, not {other:?}"))),
     };
-    let sensitivity = f64_or(p, "sensitivity", 50.0) as f32;
+    let sensitivity = (f64_or(p, "sensitivity", 50.0) as f32).clamp(0.0, 100.0);
+    let replace = p.get("replace").and_then(Value::as_bool).unwrap_or(true);
     // the uncropped photo, so positions are the spots' own coordinates
     let job = s.render_job(id, SEARCH_EDGE, SEARCH_EDGE, false, false).ok_or_else(|| bad(c, "no photo"))?;
     let img = job.run().rendered.map_err(|e| bad(c, e))?.image;
@@ -88,8 +89,18 @@ fn find_film_dust(s: &mut Session, p: &Value) -> Result<Value> {
     let out: Vec<Value> =
         found.iter().map(|d| json!({"points": d.points.iter().map(|q| [q.0, q.1]).collect::<Vec<_>>(), "size": d.radius})).collect();
     let used_infrared = infrared.is_some();
-    if !p.get("add").and_then(Value::as_bool).unwrap_or(true) || found.is_empty() {
-        return Ok(json!({"spots": out, "added": 0, "infrared": used_infrared}));
+    if !p.get("add").and_then(Value::as_bool).unwrap_or(true) {
+        return Ok(json!({"spots": out, "added": 0, "replaced": 0, "infrared": used_infrared, "sensitivity": sensitivity}));
+    }
+    // the spots an earlier run added go (the user's own stay), so a run at another sensitivity
+    // replaces them instead of piling up
+    let before = dd.spots.len();
+    if replace {
+        dd.spots.retain(|sp| !sp.auto.is_some_and(|a| a.kind == AutoSpotKind::FilmDust));
+    }
+    let replaced = before - dd.spots.len();
+    if found.is_empty() && replaced == 0 {
+        return Ok(json!({"spots": out, "added": 0, "replaced": 0, "infrared": used_infrared, "sensitivity": sensitivity}));
     }
     let base = Spot::default();
     for d in &found {
@@ -100,6 +111,7 @@ fn find_film_dust(s: &mut Session, p: &Value) -> Result<Value> {
             feather: base.feather,
             opacity: 100.0,
             source_offset: d.source.map(|o| Point::new(o.0, o.1)),
+            auto: Some(AutoSpot { kind: AutoSpotKind::FilmDust, confirmed: used_infrared, confidence: d.strength.clamp(0.0, 1.0) }),
             ..Spot::default()
         };
         if spot.source_offset.is_none() {
@@ -108,7 +120,7 @@ fn find_film_dust(s: &mut Session, p: &Value) -> Result<Value> {
         dd.spots.push(spot);
     }
     s.set_develop(id, dd, "Find Film Dust and Hair")?;
-    Ok(json!({"spots": out, "added": found.len(), "infrared": used_infrared}))
+    Ok(json!({"spots": out, "added": found.len(), "replaced": replaced, "infrared": used_infrared, "sensitivity": sensitivity}))
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -117,7 +129,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Find Film Dust and Hair",
         ["Photo", "Develop Settings"],
         None,
-        "{sensitivity?: 0..100 (50), add?: bool (true), infrared?: auto|only|never (auto)} — on a scanned negative or slide, find dust specks, hairs and scratches on the film inside the crop and add a heal spot on each speck or patch and a heal stroke along each line (one undo step). A film scanner's infrared pass (a VueScan or SilverFast RGBI TIFF) says where they are, whatever the picture shows; without one the converted picture is searched for the sharp bright marks they leave on smooth areas. `only`: an error without the pass; `never`: the picture alone → {spots: [{points: [[x, y], …], size}], added, infrared: bool}",
+        "{sensitivity?: 0..100 (50), add?: bool (true), replace?: bool (true: the spots an earlier run added go first, so a run at another sensitivity replaces them), infrared?: auto|only|never (auto)} — on a scanned negative or slide, find dust specks, hairs and scratches on the film inside the crop and add a heal spot on each speck or patch and a heal stroke along each line (one undo step). A film scanner's infrared pass (a VueScan or SilverFast RGBI TIFF) says where they are, whatever the picture shows; without one the converted picture is searched for the sharp bright marks they leave on smooth areas. `only`: an error without the pass; `never`: the picture alone. The spots are tagged auto film dust (`confirmed` when they came from the pass) → {spots: [{points: [[x, y], …], size}], added, replaced, infrared: bool, sensitivity}",
         has_active,
         find_film_dust
     )]

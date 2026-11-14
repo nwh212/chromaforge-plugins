@@ -1726,6 +1726,8 @@ pub struct UiState {
     /// Remove tool: Visualize Spots (high-pass black/white view) and its threshold 0..100.
     pub visualize_spots: bool,
     pub spots_threshold: f32,
+    /// Remove tool: how far Find Film Dust and Hair reaches (0..100; the command's `sensitivity`).
+    pub film_dust_sensitivity: f32,
     /// The library filter bar above the grid.
     pub filter_bar: bool,
     /// The filter bar's Metadata columns (issue #218): the field each column lists; empty = hidden.
@@ -2711,6 +2713,7 @@ impl Default for UiState {
             eye_pet: false,
             visualize_spots: false,
             spots_threshold: 50.0,
+            film_dust_sensitivity: 50.0,
             auto_advance: false,
             caps_lock: false,
             alternatives_same_edit: true,

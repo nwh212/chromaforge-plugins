@@ -863,6 +863,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "Remplit Sous-lieu, Ville, État et Pays à partir du GPS. Désactivé tant que vous n'avez pas choisi de fournisseur.",
   "Fills made earlier for this photo, not on it now:": "Remplissages faits auparavant pour cette photo, absents actuellement :",
   "Film Dust": "Poussière de film",
+  "Film dust sensitivity": "Sensibilité à la poussière de film",
   "Film recipe": "Recette de film",
   "Filmstrip size": "Taille de la bande de film",
   "Filter by Color Label": "Filtrer par étiquette de couleur",

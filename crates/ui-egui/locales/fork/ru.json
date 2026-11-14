@@ -963,6 +963,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "Заполняет поля Район, Город, Регион и Страна по GPS. Выключено, пока не выбран поставщик.",
   "Fills made earlier for this photo, not on it now:": "Заливки, сделанные ранее для этого фото и сейчас не применённые:",
   "Film Dust": "Пыль на плёнке",
+  "Film dust sensitivity": "Чувствительность к пыли на плёнке",
   "Film recipe": "Плёночный рецепт",
   "Filmstrip size": "Размер ленты",
   "Filter by Color Label": "Фильтр по цветовой метке",

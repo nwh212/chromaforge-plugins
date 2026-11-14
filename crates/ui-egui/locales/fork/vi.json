@@ -1048,6 +1048,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "Điền Khu vực con, Thành phố, Tỉnh/Bang và Quốc gia từ GPS. Tắt cho đến khi bạn chọn nhà cung cấp.",
   "Fills made earlier for this photo, not on it now:": "Vùng lấp đã tạo trước đây cho ảnh này, hiện không có trên ảnh:",
   "Film Dust": "Bụi phim",
+  "Film dust sensitivity": "Độ nhạy bụi phim",
   "Film recipe": "Công thức phim",
   "Filmstrip size": "Kích thước dải phim",
   "Filter by Color Label": "Lọc theo nhãn màu",

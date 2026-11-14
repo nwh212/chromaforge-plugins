@@ -943,6 +943,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "根据 GPS 填写子位置、城市、省/州和国家/地区。选择提供商之前处于关闭状态。",
   "Fills made earlier for this photo, not on it now:": "之前为此照片创建、当前未应用的填充：",
   "Film Dust": "胶片灰尘",
+  "Film dust sensitivity": "胶片灰尘灵敏度",
   "Film recipe": "胶片配方",
   "Filmstrip size": "胶片窗格大小",
   "Filter Keywords": "筛选关键字",

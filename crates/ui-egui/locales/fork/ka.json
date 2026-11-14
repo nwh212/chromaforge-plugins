@@ -1034,6 +1034,7 @@
   "Fills Sublocation, City, State and Country from GPS. Off until you choose a provider.": "GPS-ით ავსებს ქვემდებარეობას, ქალაქს, რეგიონს და ქვეყანას. გამორთულია, სანამ მომწოდებელს არ აირჩევთ.",
   "Fills made earlier for this photo, not on it now:": "ამ ფოტოსთვის ადრე შექმნილი შევსებები, რომლებიც ახლა მასზე არ არის:",
   "Film Dust": "ფირის მტვერი",
+  "Film dust sensitivity": "ფირის მტვრის მგრძნობელობა",
   "Film recipe": "ფირის რეცეპტი",
   "Filmstrip size": "კადრების ზოლის ზომა",
   "Filter by Color Label": "ფილტრი ფერადი იარლიყით",

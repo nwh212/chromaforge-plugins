@@ -18,7 +18,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **Select** a spot by clicking its pin; `Delete` removes it. **Delete all spots** is at the bottom.
 - **Visualize Spots** (`A`) shows a threshold view that makes dust and blemishes stand out; **Tool Overlay** (Auto / Always / Never).
 - **Remove Dust** finds soft dust shadows and adds spots for them. It can also run after import. See [Sensor and plug-ins](../sensor-and-plugins/).
-- **Film Dust**, for a scanned negative or slide: heals the dust specks, hairs and scratches on the film. A film scanner's RGBI file (VueScan "64-bit RGBI", SilverFast HDRi) carries an infrared pass that shows exactly where they are, and every mark gets a heal spot or a heal stroke; a scan without one (a camera scan) is searched for the sharp bright marks they leave on smooth areas. Works inside the crop, so the rebate is left alone.
+- **Film Dust**, for a scanned negative or slide: heals the dust specks, hairs and scratches on the film. A film scanner's RGBI file (VueScan "64-bit RGBI", SilverFast HDRi) carries an infrared pass that shows exactly where they are, and every mark gets a heal spot or a heal stroke; a scan without one (a camera scan) is searched for the sharp bright marks they leave on smooth areas. Works inside the crop, so the rebate is left alone. **Film dust sensitivity** sets how far it reaches: move it after a run and the spots are found again at the new setting (spots you added yourself stay).
 - **Find Blemishes**: spots on skin in faces (beyond Lightroom). See [Retouch](../../ai/retouch/).
 - Spots are part of the photo's settings: they copy with **Copy Edit Settings** and sync to other photos.
 - Generative remove: [Generative remove](../../ai/generative-remove/).
