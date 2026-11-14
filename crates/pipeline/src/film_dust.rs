@@ -168,14 +168,51 @@ pub fn detect(img: &Rgba8, sensitivity: f32) -> Vec<FilmDefect> {
 /// (the scanner's gate, where the pass is dark everywhere) nothing is reported.
 pub fn detect_infrared(ir: &Plane, luma: &Plane, sensitivity: f32) -> Vec<FilmDefect> {
     let (w, h) = (ir.width, ir.height);
-    if w < 64 || h < 64 || ir.data.len() < w * h || luma.width != w || luma.height != h || luma.data.len() < w * h {
+    if luma.width != w || luma.height != h || luma.data.len() < w * h {
         return Vec::new();
+    }
+    // (the marks' own shape: a caller that wants them grown grows the spots it makes of them)
+    let Some(map) = infrared_map(ir, sensitivity, 0) else { return Vec::new() };
+    let long = w.max(h) as f32;
+    let r = closing_radius(long);
+    let margin = 2 * r + 1;
+    let candidate = |i: usize| {
+        let (x, y) = (i % w, i / w);
+        x >= margin && y >= margin && x + margin < w && y + margin < h && map.data.get(i).is_some_and(|v| *v > 0.0)
+    };
+    // a hair may cross the whole frame, a patch be a few percent of the long edge across
+    let max_blob = ((0.6 * long) * (0.012 * long)).max(256.0) as usize;
+    let mut out = Vec::new();
+    for px in blobs(w, h, max_blob, candidate, |i| map.data.get(i).copied().unwrap_or(0.0)) {
+        if let Some(d) = classify(&px, luma, long, Certainty::Infrared) {
+            out.push(d);
+        }
+    }
+    out.sort_by(|a, b| b.strength.total_cmp(&a.strength));
+    out.truncate(MAX_DEFECTS_INFRARED);
+    out
+}
+
+/// The window the infrared pass's local level is taken over: about 0.6 % of the long edge each
+/// way (16 px at 2600), the closing twice that, so a patch up to 2.5 % across is a dip through and through.
+fn closing_radius(long: f32) -> usize {
+    ((0.006 * long).round() as usize).max(3)
+}
+
+/// The defect map of a scanner's infrared pass `ir` (0..1, bright where the film is clear) at
+/// `sensitivity` 0..100: per pixel, how far the pass falls below its local level (0 where it
+/// doesn't fall below the threshold, or outside the film), grown by `expand` pixels (shrunk when
+/// negative) so a heal or fill takes in a mark's soft edge. `None` for a pass too small to read.
+/// What [`detect_infrared`] groups into defects, and what a mask of the marks is made of.
+pub fn infrared_map(ir: &Plane, sensitivity: f32, expand: i32) -> Option<Plane> {
+    let (w, h) = (ir.width, ir.height);
+    if w < 64 || h < 64 || ir.data.len() < w * h {
+        return None;
     }
     let long = w.max(h) as f32;
     // the local level: a grey closing (a maximum, then a minimum, over a window) fills every dip
-    // narrower than the window (about 2.5 % of the long edge: 60 px at 2600), so a patch that
-    // wide is a dip through and through, not only at its rim
-    let r = ((0.006 * long).round() as usize).max(3);
+    // narrower than the window, so a patch that wide is a dip through and through, not only at its rim
+    let r = closing_radius(long);
     let level = rank(&rank(ir, 2 * r, true), 2 * r, false);
     // the film itself: where that level is at least a fifth of its typical value, less a band the
     // window's width along its edge (the scanner's gate around a frame, and anything past the
@@ -188,31 +225,26 @@ pub fn detect_infrared(ir: &Plane, luma: &Plane, sensitivity: f32) -> Vec<FilmDe
     let inside = rank(&lit, 2 * r + 1, false);
     let s = (sensitivity / 100.0).clamp(0.0, 1.0);
     if !s.is_finite() {
-        return Vec::new();
+        return None;
     }
     // how far below its level the pass must fall: a third at the default; dust blocks it almost
     // entirely, a hair or a faint scratch less
     let min_drop = 0.5 - 0.35 * s;
-    let drop = |i: usize| {
+    let mut map = Plane::from_fn(w, h, |x, y| {
+        let i = y * w + x;
         let (v, l) = (ir.data.get(i).copied().unwrap_or(1.0), level.data.get(i).copied().unwrap_or(0.0));
-        if inside.data.get(i).copied().unwrap_or(0.0) < 0.5 || l <= 0.0 { 0.0 } else { (1.0 - v / l).clamp(0.0, 1.0) }
-    };
-    let margin = 2 * r + 1;
-    let candidate = |i: usize| {
-        let (x, y) = (i % w, i / w);
-        x >= margin && y >= margin && x + margin < w && y + margin < h && drop(i) > min_drop
-    };
-    // a hair may cross the whole frame, a patch be a few percent of the long edge across
-    let max_blob = ((0.6 * long) * (0.012 * long)).max(256.0) as usize;
-    let mut out = Vec::new();
-    for px in blobs(w, h, max_blob, candidate, drop) {
-        if let Some(d) = classify(&px, luma, long, Certainty::Infrared) {
-            out.push(d);
+        if inside.data.get(i).copied().unwrap_or(0.0) < 0.5 || l <= 0.0 {
+            return 0.0;
         }
+        let drop = (1.0 - v / l).clamp(0.0, 1.0);
+        if drop > min_drop { drop } else { 0.0 }
+    });
+    // grown (a maximum over the distance) or shrunk (a minimum), at most a twentieth of the long edge
+    let reach = expand.clamp(-(long as i32 / 20), long as i32 / 20);
+    if reach != 0 {
+        map = rank(&map, reach.unsigned_abs() as usize, reach > 0);
     }
-    out.sort_by(|a, b| b.strength.total_cmp(&a.strength));
-    out.truncate(MAX_DEFECTS_INFRARED);
-    out
+    Some(map)
 }
 
 /// The 8-connected blobs of `candidate` pixels of a `w`×`h` image, each as its pixels with
@@ -560,6 +592,24 @@ mod tests {
         assert!(detect_infrared(&clean, &luma, 100.0).is_empty());
     }
 
+    /// Expand grows every mark of the map by that many pixels (and a negative value shrinks it),
+    /// so a heal takes in a mark's soft edge; a map only grows where there is a mark.
+    #[test]
+    fn expand_grows_the_marks_and_nothing_else() {
+        let (w, h) = (400, 300);
+        let mut ir = Plane::from_fn(w, h, |_, _| 0.6);
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                ir.data[(150 + dy) as usize * w + (200 + dx) as usize] = 0.05;
+            }
+        }
+        let area = |e: i32| infrared_map(&ir, 50.0, e).unwrap().data.iter().filter(|v| **v > 0.0).count();
+        let (plain, grown, shrunk) = (area(0), area(3), area(-1));
+        assert!(plain >= 9 && grown > plain * 3 && shrunk < plain, "{plain} {grown} {shrunk}");
+        assert!(grown <= 9 * 9, "grown only around the mark: {grown}");
+        assert_eq!(infrared_map(&Plane::from_fn(w, h, |_, _| 0.6), 50.0, 5).unwrap().data.iter().filter(|v| **v > 0.0).count(), 0);
+    }
+
     #[test]
     fn hostile_input_never_panics() {
         for (w, h) in [(0, 0), (1, 1), (63, 63), (64, 64), (1000, 64)] {
@@ -575,6 +625,8 @@ mod tests {
         let _ = detect_infrared(&Plane::new(100, 100), &Plane::new(90, 100), 50.0);
         let short = Plane { width: 100, height: 100, data: vec![0.0; 10] };
         assert!(detect_infrared(&short, &Plane::new(100, 100), 50.0).is_empty());
+        assert!(infrared_map(&short, 50.0, 0).is_none());
         let _ = detect_infrared(&Plane::from_fn(200, 200, |_, _| f32::NAN), &Plane::new(200, 200), f32::NAN);
+        let _ = infrared_map(&Plane::from_fn(200, 200, |_, _| 0.5), 50.0, i32::MIN);
     }
 }

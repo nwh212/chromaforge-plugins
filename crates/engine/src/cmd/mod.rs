@@ -34,7 +34,7 @@ pub(crate) mod face_detect;
 mod face_models;
 mod face_recognize;
 pub(crate) mod facets;
-mod film_dust;
+pub mod film_dust;
 pub mod filters;
 mod focus;
 pub mod folder_metadata;

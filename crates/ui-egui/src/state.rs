@@ -1726,8 +1726,12 @@ pub struct UiState {
     /// Remove tool: Visualize Spots (high-pass black/white view) and its threshold 0..100.
     pub visualize_spots: bool,
     pub spots_threshold: f32,
-    /// Remove tool: how far Find Film Dust and Hair reaches (0..100; the command's `sensitivity`).
+    /// Remove tool: how far Find Film Dust and Hair reaches (0..100; the command's `sensitivity`),
+    /// how many pixels each mark is grown (`expand`), and whether it heals from one source
+    /// instead of rebuilding each mark from its surroundings (`mode: heal`).
     pub film_dust_sensitivity: f32,
+    pub film_dust_expand: f32,
+    pub film_dust_heal: bool,
     /// The library filter bar above the grid.
     pub filter_bar: bool,
     /// The filter bar's Metadata columns (issue #218): the field each column lists; empty = hidden.
@@ -2714,6 +2718,8 @@ impl Default for UiState {
             visualize_spots: false,
             spots_threshold: 50.0,
             film_dust_sensitivity: 50.0,
+            film_dust_expand: 2.0,
+            film_dust_heal: false,
             auto_advance: false,
             caps_lock: false,
             alternatives_same_edit: true,
