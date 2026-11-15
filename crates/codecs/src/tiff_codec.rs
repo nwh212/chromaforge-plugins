@@ -10,6 +10,19 @@ use tiff::tags::Tag;
 
 const F: Format = Format::Tiff;
 
+/// Software that writes a film scan's infrared pass as an unlabelled 4th sample of an RGB TIFF.
+const INFRARED_SCANNERS: [&str; 2] = ["VueScan", "SilverFast"];
+
+/// An RGB TIFF with exactly one extra sample, not declared by `ExtraSamples` (absent, or 0 =
+/// unspecified data), written by film-scanning software that stores the infrared pass that way.
+fn infrared_scan<R: std::io::Read + std::io::Seek>(d: &mut Decoder<R>, model: Model, n_color: usize, n_samples: usize, extra: &[u16]) -> bool {
+    if model != Model::Rgb || n_samples != n_color + 1 || !matches!(extra.first(), None | Some(0)) {
+        return false;
+    }
+    let software = d.get_tag_ascii_string(Tag::Software).unwrap_or_default();
+    INFRARED_SCANNERS.iter().any(|s| software.trim_start().starts_with(s))
+}
+
 fn err(e: impl std::fmt::Display) -> Error {
     Error::Malformed(F, e.to_string())
 }
@@ -30,7 +43,12 @@ pub(crate) fn decode(bytes: &[u8], opts: &DecodeOptions) -> Result<Decoded> {
 
     let (model, n_color, n_samples, bits) = layout(ct, compression, planar)?;
     check_samples(w, h, n_samples, bits, opts)?;
-    let has_alpha = n_samples > n_color && !matches!(ct, ColorType::Palette(_));
+    // A film scanner's RGBI TIFF (VueScan's "64 bit RGBI", SilverFast's HDRi) keeps the infrared pass
+    // as a 4th sample and doesn't label it with `ExtraSamples`. Taken for alpha, it turned the photo
+    // transparent wherever the film is dense to infrared, and bleached it once flattened onto white
+    // (LR-IMP-FORMATS). Only such files are read without it; any other extra sample is alpha, as before.
+    let infrared = infrared_scan(&mut d, model, n_color, n_samples, &extra);
+    let has_alpha = n_samples > n_color && !matches!(ct, ColorType::Palette(_)) && !infrared;
     let premultiplied = has_alpha && extra.first() == Some(&1);
 
     // `read_image` reads only the first plane of a planar image (#2462); this reads them all, or

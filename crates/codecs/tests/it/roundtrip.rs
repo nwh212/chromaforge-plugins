@@ -301,6 +301,83 @@ fn ifd_tiff(entries: &[(u16, u16, u32)], data: &[u8]) -> Vec<u8> {
     b
 }
 
+/// A one-strip, uncompressed, 8-bit RGB TIFF (little-endian) with one extra sample per pixel, the
+/// `ExtraSamples` value `extra` (no tag when `None`) and the `Software` text `software` (none when empty).
+fn rgb_plus_one_tiff(software: &str, extra: Option<u16>, pixels: &[[u8; 4]]) -> Vec<u8> {
+    let short = |v: u16| v.to_le_bytes().to_vec();
+    let mut entries: Vec<(u16, u16, u32, Vec<u8>)> = vec![
+        (256, 3, 1, short(pixels.len() as u16)),
+        (257, 3, 1, short(1)),
+        (258, 3, 4, [8u16; 4].iter().flat_map(|v| v.to_le_bytes()).collect()),
+        (259, 3, 1, short(1)),
+        (262, 3, 1, short(2)),
+        (273, 4, 1, vec![]), // strip offset, filled in below
+        (277, 3, 1, short(4)),
+        (278, 3, 1, short(1)),
+        (279, 4, 1, (pixels.len() as u32 * 4).to_le_bytes().to_vec()),
+    ];
+    if !software.is_empty() {
+        let mut text = software.as_bytes().to_vec();
+        text.push(0);
+        entries.push((305, 2, text.len() as u32, text));
+    }
+    if let Some(e) = extra {
+        entries.push((338, 3, 1, short(e)));
+    }
+    entries.sort_by_key(|e| e.0);
+    let ifd_len = 2 + entries.len() * 12 + 4;
+    let mut data_at = 8 + ifd_len;
+    let mut ifd = (entries.len() as u16).to_le_bytes().to_vec();
+    let mut data = Vec::new();
+    let strip_at = data_at + entries.iter().filter(|e| e.3.len() > 4).map(|e| e.3.len()).sum::<usize>();
+    for (tag, ty, count, mut value) in entries {
+        if tag == 273 {
+            value = (strip_at as u32).to_le_bytes().to_vec();
+        }
+        ifd.extend(tag.to_le_bytes());
+        ifd.extend(ty.to_le_bytes());
+        ifd.extend(count.to_le_bytes());
+        if value.len() > 4 {
+            ifd.extend((data_at as u32).to_le_bytes());
+            data_at += value.len();
+            data.extend(value);
+        } else {
+            value.resize(4, 0);
+            ifd.extend(value);
+        }
+    }
+    ifd.extend(0u32.to_le_bytes());
+    let mut b = b"II*\0".to_vec();
+    b.extend(8u32.to_le_bytes());
+    b.extend(ifd);
+    b.extend(data);
+    b.extend(pixels.iter().flatten());
+    b
+}
+
+/// A film scanner's RGBI TIFF keeps the infrared pass as an unlabelled 4th sample: the photo isn't made
+/// transparent by it (and so bleached on white). Any other file's extra sample stays alpha.
+#[test]
+fn tiff_infrared_of_a_film_scan_is_not_alpha() {
+    // red at a quarter of the infrared's full scale, then grey at three quarters
+    let px = [[200, 0, 0, 64], [128, 128, 128, 192]];
+    let red = |d: &Decoded| d.image.get(0, 0)[0];
+    for software in ["VueScan 9 x64 (9.8.52)", "SilverFast 9.2.0r6 (Feb 21 2024)"] {
+        for extra in [None, Some(0)] {
+            let d = decode(&rgb_plus_one_tiff(software, extra, &px), DecodeOptions::default()).unwrap();
+            assert!(!d.has_alpha && d.alpha.is_none(), "{software} {extra:?}");
+            assert!((red(&d) - srgb_to_linear(200.0 / 255.0)).abs() < 1e-3, "{software} {extra:?}: red {}", red(&d));
+        }
+        // a scanner's file that does declare alpha keeps it
+        let d = decode(&rgb_plus_one_tiff(software, Some(2), &px), DecodeOptions::default()).unwrap();
+        assert!(d.has_alpha, "{software}, declared alpha");
+    }
+    for (software, extra) in [("", None), ("Adobe Photoshop 25.0", None), ("GIMP 2.10", Some(2)), ("", Some(1))] {
+        let d = decode(&rgb_plus_one_tiff(software, extra, &px), DecodeOptions::default()).unwrap();
+        assert!(d.has_alpha, "{software:?} {extra:?}: the extra sample is alpha, as before");
+    }
+}
+
 /// A strip or tile can be larger than the pixels it shows (a JPEG header, padding to the tile size), so
 /// a small `max_pixels` must not shrink the intermediate buffer below the `tiff` crate's 128 MiB
 /// default. Both files below were refused with "decoder limits exceeded" when the buffer was capped at
